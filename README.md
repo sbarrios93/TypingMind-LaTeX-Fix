@@ -1,0 +1,1 @@
+# TypingMind-LaTeX-Fix
