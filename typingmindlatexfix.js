@@ -17,6 +17,37 @@
         console.log(`[LaTeX Debug] ${message}`, data || '');
     }
 
+    function isInCodeBlock(element) {
+        // First check if element is in a code block
+        let parent = element;
+        while (parent) {
+            if (parent.tagName === 'PRE' || parent.tagName === 'CODE') {
+                return true;
+            }
+            parent = parent.parentElement;
+        }
+
+        // Then check if content looks like code/JSON
+        const content = element.textContent;
+
+        // Check for JSON-like content
+        if (
+            /^\s*[\[{].*[\]}]\s*$/.test(content) &&
+            (content.includes('"') || content.includes(':'))
+        ) {
+            return true;
+        }
+
+        // Check for code-like density of special characters
+        const specialCharCount = (content.match(/[:"'{}[\],]/g) || []).length;
+        const textLength = content.length;
+        if (textLength > 0 && specialCharCount / textLength > 0.05) {
+            return true;
+        }
+
+        return false;
+    }
+
     function isLikelyLatex(content) {
         // First check if it's just numbers
         if (/^\s*\d+\s*$/.test(content)) {
@@ -31,6 +62,7 @@
             /[α-ωΑ-Ω]/.test(content) || // Greek letters
             /\frac/.test(content) || // Common LaTeX commands
             /\int/.test(content) || // Integrals
+            /\\left|\\right/.test(content) || // Delimiter commands
             content.includes('\n') // Multiline content
         );
     }
@@ -76,17 +108,6 @@
         `;
         document.head.appendChild(styles);
         debugLog('Styles injected');
-    }
-
-    function isInCodeBlock(element) {
-        let parent = element;
-        while (parent) {
-            if (parent.tagName === 'PRE' || parent.tagName === 'CODE') {
-                return true;
-            }
-            parent = parent.parentElement;
-        }
-        return false;
     }
 
     function convertToMathML(latex, isDisplay) {
@@ -173,6 +194,24 @@
     function findMatchingDelimiter(text, startPos) {
         debugLog('Finding delimiter at position:', startPos);
 
+        // Helper function to find matching bracket considering nesting
+        function findMatchingBracket(openBracket, closeBracket, pos) {
+            let depth = 1;
+            let i = pos + 1;
+            while (i < text.length) {
+                if (text[i] === openBracket && text[i - 1] !== '\\') {
+                    depth++;
+                } else if (text[i] === closeBracket && text[i - 1] !== '\\') {
+                    depth--;
+                    if (depth === 0) {
+                        return i;
+                    }
+                }
+                i++;
+            }
+            return -1;
+        }
+
         // Handle display dollars
         if (text.startsWith('$$', startPos)) {
             const endPos = text.indexOf('$$', startPos + 2);
@@ -204,7 +243,7 @@
 
         // Handle unescaped square brackets that should be LaTeX
         if (text[startPos] === '[') {
-            const endPos = text.indexOf(']', startPos + 1);
+            const endPos = findMatchingBracket('[', ']', startPos);
             if (endPos !== -1) {
                 const content = text.slice(startPos + 1, endPos);
                 if (isLikelyLatex(content)) {
@@ -220,7 +259,7 @@
 
         // Handle unescaped parentheses that should be LaTeX
         if (text[startPos] === '(') {
-            const endPos = text.indexOf(')', startPos + 1);
+            const endPos = findMatchingBracket('(', ')', startPos);
             if (endPos !== -1) {
                 const content = text.slice(startPos + 1, endPos);
                 if (isLikelyLatex(content)) {
@@ -359,6 +398,15 @@
         }
 
         try {
+            // Preserve \left and \right commands
+            latex = latex
+                .replace(/\\left\s*\(/g, '\\left(')
+                .replace(/\\right\s*\)/g, '\\right)')
+                .replace(/\\left\s*\[/g, '\\left[')
+                .replace(/\\right\s*\]/g, '\\right]')
+                .replace(/\\left\s*\{/g, '\\left\\{')
+                .replace(/\\right\s*\}/g, '\\right\\}');
+
             debugLog('Processing LaTeX:', latex);
             const isDisplay =
                 match.content.startsWith('$$') ||
@@ -525,7 +573,10 @@
                     // Check for text content changes
                     if (mutation.type === 'characterData') {
                         const node = mutation.target;
-                        if (!node.parentElement?.closest('.math-processed')) {
+                        if (
+                            !node.parentElement?.closest('.math-processed') &&
+                            !isInCodeBlock(node)
+                        ) {
                             shouldProcess = true;
                             newNodes.push(node);
                         }
@@ -534,13 +585,19 @@
                     // Check for added nodes
                     mutation.addedNodes.forEach(node => {
                         if (node.nodeType === Node.ELEMENT_NODE) {
-                            if (!node.closest('.math-processed')) {
+                            if (
+                                !node.closest('.math-processed') &&
+                                !isInCodeBlock(node)
+                            ) {
                                 shouldProcess = true;
                                 newNodes.push(node);
                             }
                         } else if (node.nodeType === Node.TEXT_NODE) {
                             if (
-                                !node.parentElement?.closest('.math-processed')
+                                !node.parentElement?.closest(
+                                    '.math-processed'
+                                ) &&
+                                !isInCodeBlock(node)
                             ) {
                                 shouldProcess = true;
                                 newNodes.push(node);
