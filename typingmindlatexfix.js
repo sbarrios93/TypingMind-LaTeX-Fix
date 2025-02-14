@@ -17,23 +17,32 @@
         console.log(`[LaTeX Debug] ${message}`, data || '');
     }
 
-    function cleanLatex(latex) {
-        debugLog('Cleaning LaTeX:', latex);
+    function cleanDollarLatex(latex) {
+        // Minimal cleaning for dollar-delimited expressions
+        return latex.replace(/\s*\n\s*/g, ' ').trim();
+    }
 
-        // First, protect certain commands
-        let cleaned = latex
-            // Protect \widetilde and similar commands
-            .replace(
-                /(\\widetilde|\\tilde|\\hat|\\bar)\{([^}]+)\}/g,
-                '@@$1@@$2@@'
-            )
+    function cleanBracketLatex(latex) {
+        // More aggressive cleaning for bracket-delimited expressions
+        let cleaned = latex;
+
+        // First protect commands that shouldn't be modified
+        const protected = [];
+        cleaned = cleaned.replace(
+            /\\(?:widetilde|tilde|hat|bar|vec)\{([^}]+)\}/g,
+            match => {
+                protected.push(match);
+                return `@@PROTECTED${protected.length - 1}@@`;
+            }
+        );
+
+        // Clean up the LaTeX
+        cleaned = cleaned
             // Handle \left and \right
-            .replace(/\\left\s*\(/g, '\\lparen ')
-            .replace(/\\right\s*\)/g, '\\rparen ')
-            .replace(/\\left\s*\[/g, '\\lbrack ')
-            .replace(/\\right\s*\]/g, '\\rbrack ')
-            .replace(/\\left\s*\{/g, '\\lbrace ')
-            .replace(/\\right\s*\}/g, '\\rbrace ')
+            .replace(/\\left\s*\(/g, '(')
+            .replace(/\\right\s*\)/g, ')')
+            .replace(/\\left\s*\[/g, '[')
+            .replace(/\\right\s*\]/g, ']')
             // Fix common issues
             .replace(/([^\\])delta/g, '$1\\delta')
             .replace(/([^\\])pi/g, '$1\\pi')
@@ -41,15 +50,50 @@
             .replace(/\s*\n\s*/g, ' ')
             .trim();
 
-        // Restore protected commands
-        cleaned = cleaned
-            .replace(/@@\\widetilde@@([^@]+)@@/g, '\\widetilde{$1}')
-            .replace(/@@\\tilde@@([^@]+)@@/g, '\\tilde{$1}')
-            .replace(/@@\\hat@@([^@]+)@@/g, '\\hat{$1}')
-            .replace(/@@\\bar@@([^@]+)@@/g, '\\bar{$1}');
+        // Restore protected content
+        cleaned = cleaned.replace(
+            /@@PROTECTED(\d+)@@/g,
+            (_, index) => protected[index]
+        );
 
-        debugLog('Cleaned LaTeX:', cleaned);
         return cleaned;
+    }
+
+    function convertToMathML(latex, isDisplay, type) {
+        debugLog('Converting to MathML:', { latex, isDisplay, type });
+
+        try {
+            let cleanedLatex;
+            let originalLatex = latex;
+
+            // Use different cleaning strategies based on delimiter type
+            if (type === 'dollars') {
+                cleanedLatex = cleanDollarLatex(latex);
+            } else {
+                cleanedLatex = cleanBracketLatex(latex);
+            }
+
+            debugLog('Cleaned LaTeX:', cleanedLatex);
+
+            try {
+                const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
+                return new XMLSerializer().serializeToString(mathML);
+            } catch (e) {
+                debugLog('First conversion attempt failed:', e);
+
+                // If cleaned version fails, try original
+                if (cleanedLatex !== originalLatex) {
+                    debugLog('Trying original LaTeX');
+                    const mathML = TeXZilla.toMathML(originalLatex, isDisplay);
+                    return new XMLSerializer().serializeToString(mathML);
+                }
+                throw e;
+            }
+        } catch (e) {
+            console.error('TeXZilla conversion error:', e);
+            debugLog('Failed LaTeX:', latex);
+            return null;
+        }
     }
 
     async function loadTeXZilla() {
@@ -105,103 +149,192 @@
         }
         return false;
     }
+    function findMatchingDelimiter(text, startPos) {
+        debugLog('Finding delimiter at position:', startPos);
 
-    function convertToMathML(latex, isDisplay) {
-        debugLog('Converting to MathML:', { latex, isDisplay });
+        // Helper function to find matching end delimiter
+        function findMatching(start, end, pos) {
+            let depth = 1;
+            let i = pos + start.length;
+
+            while (i < text.length) {
+                if (text.startsWith(start, i) && text[i - 1] !== '\\') {
+                    depth++;
+                } else if (text.startsWith(end, i) && text[i - 1] !== '\\') {
+                    depth--;
+                    if (depth === 0) {
+                        return i;
+                    }
+                }
+                i++;
+            }
+            return -1;
+        }
+
+        // Handle display dollars
+        if (text.startsWith('$$', startPos)) {
+            const endPos = text.indexOf('$$', startPos + 2);
+            if (endPos !== -1) {
+                return {
+                    start: startPos,
+                    end: endPos + 2,
+                    delimiter: DELIMITERS.DISPLAY_DOLLARS,
+                    type: 'dollars',
+                };
+            }
+        }
+
+        // Handle inline dollars
+        if (text[startPos] === '$' && !text.startsWith('$$', startPos)) {
+            let pos = startPos + 1;
+            while (pos < text.length) {
+                if (
+                    text[pos] === '$' &&
+                    text[pos - 1] !== '\\' &&
+                    !text.startsWith('$$', pos - 1)
+                ) {
+                    return {
+                        start: startPos,
+                        end: pos + 1,
+                        delimiter: DELIMITERS.INLINE_DOLLARS,
+                        type: 'dollars',
+                    };
+                }
+                pos++;
+            }
+        }
+
+        // Handle display brackets
+        if (text.startsWith('\\[', startPos)) {
+            const endPos = findMatching('\\[', '\\]', startPos);
+            if (endPos !== -1) {
+                return {
+                    start: startPos,
+                    end: endPos + 2,
+                    delimiter: DELIMITERS.DISPLAY_BRACKETS,
+                    type: 'brackets',
+                };
+            }
+        }
+
+        // Handle inline parentheses
+        if (text.startsWith('\\(', startPos)) {
+            const endPos = findMatching('\\(', '\\)', startPos);
+            if (endPos !== -1) {
+                return {
+                    start: startPos,
+                    end: endPos + 2,
+                    delimiter: DELIMITERS.INLINE_PARENS,
+                    type: 'brackets',
+                };
+            }
+        }
+
+        return null;
+    }
+
+    function findMathDelimiters(text) {
+        debugLog('Finding math delimiters in text');
+        const segments = [];
+        let pos = 0;
+        let lastPos = 0;
+
+        while (pos < text.length) {
+            let found = false;
+
+            // Check for delimiters
+            if (
+                (text[pos] === '$' ||
+                    text.startsWith('\\[', pos) ||
+                    text.startsWith('\\(', pos)) &&
+                !(pos > 0 && text[pos - 1] === '\\')
+            ) {
+                const match = findMatchingDelimiter(text, pos);
+                if (match) {
+                    debugLog('Found match:', match);
+                    if (pos > lastPos) {
+                        segments.push(text.slice(lastPos, pos));
+                    }
+
+                    segments.push({
+                        type: 'math',
+                        content: text.slice(match.start, match.end),
+                        display: match.delimiter.display,
+                        delimiterType: match.type,
+                    });
+
+                    lastPos = match.end;
+                    pos = match.end;
+                    found = true;
+                }
+            }
+
+            if (!found) {
+                pos++;
+            }
+        }
+
+        if (lastPos < text.length) {
+            segments.push(text.slice(lastPos));
+        }
+
+        debugLog('Found segments:', segments);
+        return segments;
+    }
+
+    function processMathExpression(match) {
+        debugLog('Processing math expression:', match);
+        const container = document.createElement('span');
+        container.className = 'math-container math-processed';
+        if (match.display) {
+            container.setAttribute('data-display', 'block');
+        }
+
+        let latex;
+        if (match.content.startsWith('$$') && match.content.endsWith('$$')) {
+            latex = match.content.slice(2, -2);
+        } else if (
+            match.content.startsWith('$') &&
+            match.content.endsWith('$')
+        ) {
+            latex = match.content.slice(1, -1);
+        } else if (
+            match.content.startsWith('\\[') &&
+            match.content.endsWith('\\]')
+        ) {
+            latex = match.content.slice(2, -2);
+        } else if (
+            match.content.startsWith('\\(') &&
+            match.content.endsWith('\\)')
+        ) {
+            latex = match.content.slice(2, -2);
+        }
+
+        if (!latex) {
+            debugLog('No LaTeX content extracted');
+            container.textContent = match.content;
+            return container;
+        }
+
         try {
-            // Clean up the LaTeX before conversion
-            const cleanedLatex = cleanLatex(latex);
-
-            // Try conversion with cleaned LaTeX
-            try {
-                const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
-                return new XMLSerializer().serializeToString(mathML);
-            } catch (e) {
-                debugLog('First conversion attempt failed:', e);
-
-                // Try alternative cleanup if first attempt fails
-                const alternativeLatex = cleanedLatex
-                    .replace(/\\lparen/g, '(')
-                    .replace(/\\rparen/g, ')')
-                    .replace(/\\lbrack/g, '[')
-                    .replace(/\\rbrack/g, ']');
-
-                const mathML = TeXZilla.toMathML(alternativeLatex, isDisplay);
-                return new XMLSerializer().serializeToString(mathML);
+            const mathML = convertToMathML(
+                latex,
+                match.display,
+                match.delimiterType
+            );
+            if (mathML) {
+                container.innerHTML = mathML;
+            } else {
+                // Fallback: show original content
+                container.textContent = match.content;
             }
         } catch (e) {
-            console.error('TeXZilla conversion error:', e);
-            debugLog('Failed LaTeX:', latex);
-            return null;
+            debugLog('Error converting to MathML:', e);
+            container.textContent = match.content;
         }
+
+        return container;
     }
-
-    function isLikelyLatex(content) {
-        // Check for common LaTeX constructs and mathematical symbols
-        const latexPatterns = [
-            /\\[a-zA-Z]+/, // LaTeX commands
-            /[_^]{.*?}/, // Subscripts and superscripts
-            /\\?[∫∑∏√∞±≤≥≠]/, // Mathematical symbols
-            /\\(left|right)/, // Brackets
-            /\\(frac|sqrt|int)/, // Common math constructs
-            /[α-ωΑ-Ω]/, // Greek letters
-            /\\(delta|pi|alpha)/, // Named Greek letters
-            /\{.*?\}/, // Curly brace groups
-            /\\[[\]()]/, // Escaped brackets
-            /\$.*?\$/, // Nested dollar signs
-        ];
-
-        return latexPatterns.some(pattern => pattern.test(content));
-    }
-
-    function reconstructDelimiters(text) {
-        debugLog('Reconstructing delimiters for:', text);
-
-        // First identify and protect existing LaTeX delimiters
-        const protected = [];
-        let protectedText = text.replace(
-            /(\$\$[\s\S]*?\$\$|\$[^\$\n]+\$)/g,
-            (match, p1) => {
-                protected.push(p1);
-                return `@@PROTECTED${protected.length - 1}@@`;
-            }
-        );
-
-        // Now handle brackets and parentheses that should be LaTeX
-        protectedText = protectedText.replace(
-            /\[([\s\S]*?)\]/g,
-            (match, content) => {
-                // Only add backslashes if it looks like LaTeX content
-                if (isLikelyLatex(content)) {
-                    return `\\[${content}\\]`;
-                }
-                return match;
-            }
-        );
-
-        protectedText = protectedText.replace(
-            /\(([\s\S]*?)\)/g,
-            (match, content) => {
-                // Only add backslashes if it looks like LaTeX content
-                if (isLikelyLatex(content)) {
-                    return `\\(${content}\\)`;
-                }
-                return match;
-            }
-        );
-
-        // Restore protected content
-        protectedText = protectedText.replace(
-            /@@PROTECTED(\d+)@@/g,
-            (match, index) => {
-                return protected[parseInt(index)];
-            }
-        );
-
-        debugLog('Reconstructed text:', protectedText);
-        return protectedText;
-    }
-
     function getAdjacentTextNodes(node) {
         debugLog('Getting adjacent text nodes for:', node.textContent);
         const nodes = [];
@@ -212,14 +345,12 @@
         function addNode(n, type = 'text') {
             if (n) {
                 const content = type === 'text' ? n.textContent : '\n';
-                if (content && content.trim()) {
-                    nodes.push({
-                        type: type,
-                        node: n,
-                        content: content,
-                    });
-                    text += content;
-                }
+                nodes.push({
+                    type: type,
+                    node: n,
+                    content: content,
+                });
+                text += content;
             }
         }
 
@@ -260,191 +391,11 @@
             current = current.nextSibling;
         }
 
-        const reconstructedText = reconstructDelimiters(text);
-        debugLog('Original text:', text);
-        debugLog('Reconstructed text:', reconstructedText);
-
+        debugLog('Collected text:', text);
         return {
             nodes: nodes,
-            text: reconstructedText,
-            originalText: text,
+            text: text,
         };
-    }
-
-    function findMatchingDelimiter(text, startPos) {
-        debugLog('Finding delimiter at position:', startPos);
-
-        // Helper function to find matching end delimiter
-        function findMatching(start, end, pos) {
-            let depth = 1;
-            let i = pos + start.length;
-
-            while (i < text.length) {
-                if (text.startsWith(start, i) && text[i - 1] !== '\\') {
-                    depth++;
-                } else if (text.startsWith(end, i) && text[i - 1] !== '\\') {
-                    depth--;
-                    if (depth === 0) {
-                        return i;
-                    }
-                }
-                i++;
-            }
-            return -1;
-        }
-
-        // Handle display dollars
-        if (text.startsWith('$$', startPos)) {
-            const endPos = findMatching('$$', '$$', startPos);
-            if (endPos !== -1) {
-                return {
-                    start: startPos,
-                    end: endPos + 2,
-                    delimiter: DELIMITERS.DISPLAY_DOLLARS,
-                };
-            }
-        }
-
-        // Handle inline dollars
-        if (text[startPos] === '$' && !text.startsWith('$$', startPos)) {
-            let pos = startPos + 1;
-            while (pos < text.length) {
-                if (
-                    text[pos] === '$' &&
-                    text[pos - 1] !== '\\' &&
-                    !text.startsWith('$$', pos - 1)
-                ) {
-                    return {
-                        start: startPos,
-                        end: pos + 1,
-                        delimiter: DELIMITERS.INLINE_DOLLARS,
-                    };
-                }
-                pos++;
-            }
-        }
-
-        // Handle display brackets
-        if (text.startsWith('\\[', startPos)) {
-            const endPos = findMatching('\\[', '\\]', startPos);
-            if (endPos !== -1) {
-                return {
-                    start: startPos,
-                    end: endPos + 2,
-                    delimiter: DELIMITERS.DISPLAY_BRACKETS,
-                };
-            }
-        }
-
-        // Handle inline parentheses
-        if (text.startsWith('\\(', startPos)) {
-            const endPos = findMatching('\\(', '\\)', startPos);
-            if (endPos !== -1) {
-                return {
-                    start: startPos,
-                    end: endPos + 2,
-                    delimiter: DELIMITERS.INLINE_PARENS,
-                };
-            }
-        }
-
-        return null;
-    }
-    function findMathDelimiters(text) {
-        debugLog('Finding math delimiters in text');
-        const segments = [];
-        let pos = 0;
-        let lastPos = 0;
-
-        while (pos < text.length) {
-            let found = false;
-
-            if (
-                (text[pos] === '$' ||
-                    text.startsWith('\\[', pos) ||
-                    text.startsWith('\\(', pos)) &&
-                !(pos > 0 && text[pos - 1] === '\\')
-            ) {
-                const match = findMatchingDelimiter(text, pos);
-                if (match) {
-                    debugLog('Found match:', match);
-                    if (pos > lastPos) {
-                        segments.push(text.slice(lastPos, pos));
-                    }
-
-                    segments.push({
-                        type: 'math',
-                        content: text.slice(match.start, match.end),
-                        display: match.delimiter.display,
-                    });
-
-                    lastPos = match.end;
-                    pos = match.end;
-                    found = true;
-                }
-            }
-
-            if (!found) {
-                pos++;
-            }
-        }
-
-        if (lastPos < text.length) {
-            segments.push(text.slice(lastPos));
-        }
-
-        debugLog('Found segments:', segments);
-        return segments;
-    }
-
-    function processMathExpression(match) {
-        debugLog('Processing math expression:', match);
-        const container = document.createElement('span');
-        container.className = 'math-container math-processed';
-        if (match.display) {
-            container.setAttribute('data-display', 'block');
-        }
-
-        let latex;
-        if (match.content.startsWith('$$') && match.content.endsWith('$$')) {
-            latex = match.content.slice(2, -2).trim();
-        } else if (
-            match.content.startsWith('$') &&
-            match.content.endsWith('$')
-        ) {
-            latex = match.content.slice(1, -1).trim();
-        } else if (
-            match.content.startsWith('\\[') &&
-            match.content.endsWith('\\]')
-        ) {
-            latex = match.content.slice(2, -2).trim();
-        } else if (
-            match.content.startsWith('\\(') &&
-            match.content.endsWith('\\)')
-        ) {
-            latex = match.content.slice(2, -2).trim();
-        }
-
-        if (!latex) {
-            debugLog('No LaTeX content extracted');
-            container.textContent = match.content;
-            return container;
-        }
-
-        try {
-            const mathML = convertToMathML(latex, match.display);
-            if (mathML) {
-                container.innerHTML = mathML;
-            } else {
-                // If conversion fails, try to display original LaTeX
-                container.textContent = match.content;
-            }
-        } catch (e) {
-            debugLog('Error converting to MathML:', e);
-            container.textContent = match.content;
-        }
-
-        return container;
     }
 
     function processNode(node) {
@@ -453,12 +404,7 @@
         }
 
         debugLog('Processing node:', node.textContent);
-        const { nodes, text, originalText } = getAdjacentTextNodes(node);
-
-        if (text === originalText) {
-            debugLog('No changes needed for this node');
-            return;
-        }
+        const { nodes, text } = getAdjacentTextNodes(node);
 
         // Check for any math delimiters
         let hasDelimiter = false;
@@ -531,7 +477,7 @@
                 try {
                     processNode(nodes[index++]);
                 } catch (e) {
-                    debugLog('Error processing node in batch:', e);
+                    debugLog('Error processing node:', e);
                 }
             }
 
@@ -544,129 +490,38 @@
     }
 
     function findTextNodes() {
-        try {
-            const walker = document.createTreeWalker(
-                document.body,
-                NodeFilter.SHOW_TEXT,
-                {
-                    acceptNode: node => {
-                        if (
-                            isInCodeBlock(node) ||
-                            node.parentElement?.closest('.math-processed') ||
-                            !node.textContent.trim()
-                        ) {
-                            return NodeFilter.FILTER_REJECT;
-                        }
-                        return NodeFilter.FILTER_ACCEPT;
-                    },
-                }
-            );
-
-            const nodes = [];
-            let node;
-            while ((node = walker.nextNode())) {
-                nodes.push(node);
+        const walker = document.createTreeWalker(
+            document.body,
+            NodeFilter.SHOW_TEXT,
+            {
+                acceptNode: node => {
+                    if (
+                        isInCodeBlock(node) ||
+                        node.parentElement?.closest('.math-processed')
+                    ) {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    return NodeFilter.FILTER_ACCEPT;
+                },
             }
-            debugLog('Found text nodes:', nodes.length);
-            return nodes;
-        } catch (e) {
-            debugLog('Error finding text nodes:', e);
-            return [];
+        );
+
+        const nodes = [];
+        let node;
+        while ((node = walker.nextNode())) {
+            nodes.push(node);
         }
+        debugLog('Found text nodes:', nodes.length);
+        return nodes;
     }
 
     function processMath() {
-        try {
-            debugLog('Processing math expressions');
-            const nodes = findTextNodes();
-            if (nodes.length > 0) {
-                processNodes(nodes);
-            }
-        } catch (e) {
-            debugLog('Error in processMath:', e);
+        debugLog('Processing math expressions');
+        const nodes = findTextNodes();
+        if (nodes.length > 0) {
+            processNodes(nodes);
         }
     }
-
-    // Enhanced mutation observer handler
-    function handleMutations(mutations) {
-        try {
-            let shouldProcess = false;
-            let newNodes = new Set();
-
-            mutations.forEach(mutation => {
-                // Handle added nodes
-                mutation.addedNodes.forEach(node => {
-                    if (node.nodeType === Node.ELEMENT_NODE) {
-                        if (!node.closest('.math-processed')) {
-                            shouldProcess = true;
-                            newNodes.add(node);
-                        }
-                    } else if (node.nodeType === Node.TEXT_NODE) {
-                        if (!node.parentElement?.closest('.math-processed')) {
-                            shouldProcess = true;
-                            newNodes.add(node);
-                        }
-                    }
-                });
-
-                // Handle character data changes
-                if (mutation.type === 'characterData') {
-                    const node = mutation.target;
-                    if (!node.parentElement?.closest('.math-processed')) {
-                        shouldProcess = true;
-                        newNodes.add(node);
-                    }
-                }
-            });
-
-            if (shouldProcess) {
-                debugLog(`Processing ${newNodes.size} new/modified nodes`);
-                requestIdleCallback(() => {
-                    newNodes.forEach(node => {
-                        try {
-                            if (node.nodeType === Node.ELEMENT_NODE) {
-                                const textNodes = [];
-                                const walker = document.createTreeWalker(
-                                    node,
-                                    NodeFilter.SHOW_TEXT,
-                                    {
-                                        acceptNode: textNode => {
-                                            if (
-                                                !isInCodeBlock(textNode) &&
-                                                !textNode.parentElement?.closest(
-                                                    '.math-processed'
-                                                ) &&
-                                                textNode.textContent.trim()
-                                            ) {
-                                                return NodeFilter.FILTER_ACCEPT;
-                                            }
-                                            return NodeFilter.FILTER_REJECT;
-                                        },
-                                    }
-                                );
-
-                                let textNode;
-                                while ((textNode = walker.nextNode())) {
-                                    textNodes.push(textNode);
-                                }
-
-                                if (textNodes.length > 0) {
-                                    processNodes(textNodes);
-                                }
-                            } else if (node.nodeType === Node.TEXT_NODE) {
-                                processNode(node);
-                            }
-                        } catch (e) {
-                            debugLog('Error processing mutation node:', e);
-                        }
-                    });
-                });
-            }
-        } catch (e) {
-            debugLog('Error handling mutations:', e);
-        }
-    }
-
     async function initialize() {
         try {
             debugLog('Initializing LaTeX converter...');
@@ -676,8 +531,83 @@
             // Initial processing
             processMath();
 
-            // Set up mutation observer
-            const observer = new MutationObserver(handleMutations);
+            // Enhanced mutation observer with better handling of dynamic content
+            const observer = new MutationObserver(mutations => {
+                let shouldProcess = false;
+                let newNodes = [];
+
+                mutations.forEach(mutation => {
+                    // Check for text content changes
+                    if (mutation.type === 'characterData') {
+                        const node = mutation.target;
+                        if (!node.parentElement?.closest('.math-processed')) {
+                            shouldProcess = true;
+                            newNodes.push(node);
+                        }
+                    }
+
+                    // Check for added nodes
+                    mutation.addedNodes.forEach(node => {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            if (!node.closest('.math-processed')) {
+                                shouldProcess = true;
+                                newNodes.push(node);
+                            }
+                        } else if (node.nodeType === Node.TEXT_NODE) {
+                            if (
+                                !node.parentElement?.closest('.math-processed')
+                            ) {
+                                shouldProcess = true;
+                                newNodes.push(node);
+                            }
+                        }
+                    });
+                });
+
+                if (shouldProcess) {
+                    debugLog(`Processing ${newNodes.length} new nodes`);
+                    requestIdleCallback(() => {
+                        newNodes.forEach(node => {
+                            try {
+                                if (node.nodeType === Node.ELEMENT_NODE) {
+                                    const textNodes = [];
+                                    const walker = document.createTreeWalker(
+                                        node,
+                                        NodeFilter.SHOW_TEXT,
+                                        {
+                                            acceptNode: textNode => {
+                                                if (
+                                                    !isInCodeBlock(textNode) &&
+                                                    !textNode.parentElement?.closest(
+                                                        '.math-processed'
+                                                    )
+                                                ) {
+                                                    return NodeFilter.FILTER_ACCEPT;
+                                                }
+                                                return NodeFilter.FILTER_REJECT;
+                                            },
+                                        }
+                                    );
+
+                                    let textNode;
+                                    while ((textNode = walker.nextNode())) {
+                                        textNodes.push(textNode);
+                                    }
+
+                                    if (textNodes.length > 0) {
+                                        processNodes(textNodes);
+                                    }
+                                } else if (node.nodeType === Node.TEXT_NODE) {
+                                    processNode(node);
+                                }
+                            } catch (e) {
+                                debugLog('Error processing mutation node:', e);
+                            }
+                        });
+                    });
+                }
+            });
+
             observer.observe(document.body, {
                 childList: true,
                 subtree: true,
@@ -691,82 +621,75 @@
         }
     }
 
-    // Utility functions exposed to window
-    if (typeof window !== 'undefined') {
-        window.LaTeXProcessor = {
-            toggleDebug: function (enable = true) {
-                window.DEBUG_LATEX = enable;
-                debugLog('Debug mode ' + (enable ? 'enabled' : 'disabled'));
-            },
+    // Utility functions for external control
+    const LaTeXProcessor = {
+        toggleDebug: function (enable = true) {
+            window.DEBUG_LATEX = enable;
+            debugLog('Debug mode ' + (enable ? 'enabled' : 'disabled'));
+        },
 
-            reprocess: function () {
-                debugLog('Manually triggering LaTeX processing');
-                processMath();
-            },
+        reprocess: function () {
+            debugLog('Manually triggering LaTeX processing');
+            processMath();
+        },
 
-            processElement: function (element) {
-                if (!element) {
-                    debugLog('No element provided');
-                    return;
-                }
+        processElement: function (element) {
+            if (!element) {
+                debugLog('No element provided');
+                return;
+            }
 
-                try {
-                    const textNodes = [];
-                    const walker = document.createTreeWalker(
-                        element,
-                        NodeFilter.SHOW_TEXT,
-                        {
-                            acceptNode: textNode => {
-                                if (
-                                    !isInCodeBlock(textNode) &&
-                                    !textNode.parentElement?.closest(
-                                        '.math-processed'
-                                    ) &&
-                                    textNode.textContent.trim()
-                                ) {
-                                    return NodeFilter.FILTER_ACCEPT;
-                                }
-                                return NodeFilter.FILTER_REJECT;
-                            },
-                        }
-                    );
-
-                    let textNode;
-                    while ((textNode = walker.nextNode())) {
-                        textNodes.push(textNode);
+            debugLog('Processing specific element:', element);
+            try {
+                const textNodes = [];
+                const walker = document.createTreeWalker(
+                    element,
+                    NodeFilter.SHOW_TEXT,
+                    {
+                        acceptNode: textNode => {
+                            if (
+                                !isInCodeBlock(textNode) &&
+                                !textNode.parentElement?.closest(
+                                    '.math-processed'
+                                )
+                            ) {
+                                return NodeFilter.FILTER_ACCEPT;
+                            }
+                            return NodeFilter.FILTER_REJECT;
+                        },
                     }
-
-                    if (textNodes.length > 0) {
-                        processNodes(textNodes);
-                    }
-                } catch (e) {
-                    debugLog('Error processing element:', e);
-                }
-            },
-
-            getState: function () {
-                return {
-                    teXZillaLoaded: state.teXZillaLoaded,
-                    debug: !!window.DEBUG_LATEX,
-                };
-            },
-
-            // Add recovery function
-            recoverOriginal: function (element) {
-                const mathElements = element.querySelectorAll(
-                    '.math-container[data-original]'
                 );
-                mathElements.forEach(el => {
-                    el.textContent = el.getAttribute('data-original');
-                });
-            },
-        };
-    }
+
+                let textNode;
+                while ((textNode = walker.nextNode())) {
+                    textNodes.push(textNode);
+                }
+
+                if (textNodes.length > 0) {
+                    processNodes(textNodes);
+                }
+            } catch (e) {
+                debugLog('Error processing element:', e);
+            }
+        },
+
+        getState: function () {
+            return {
+                teXZillaLoaded: state.teXZillaLoaded,
+                debug: !!window.DEBUG_LATEX,
+            };
+        },
+    };
 
     // Start the extension
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initialize);
     } else {
         initialize();
+    }
+
+    // Expose utility functions globally
+    if (typeof window !== 'undefined') {
+        window.LaTeXProcessor = LaTeXProcessor;
     }
 })();
