@@ -317,7 +317,43 @@
             container.setAttribute('data-display', 'block');
         }
 
-        const mathML = TeXZilla.toMathML(match.content, match.display);
+        let latex;
+        // Extract the inner content without the delimiters
+        if (match.content.startsWith('$$') && match.content.endsWith('$$')) {
+            latex = match.content.slice(2, -2).trim();
+        } else if (
+            match.content.startsWith('$') &&
+            match.content.endsWith('$')
+        ) {
+            latex = match.content.slice(1, -1).trim();
+        } else if (
+            match.content.startsWith('\\[') &&
+            match.content.endsWith('\\]')
+        ) {
+            latex = match.content.slice(2, -2).trim();
+        } else if (
+            match.content.startsWith('\\(') &&
+            match.content.endsWith('\\)')
+        ) {
+            latex = match.content.slice(2, -2).trim();
+        } else if (
+            match.content.startsWith('[') &&
+            match.content.endsWith(']')
+        ) {
+            latex = match.content.slice(1, -1).trim();
+        } else if (
+            match.content.startsWith('(') &&
+            match.content.endsWith(')')
+        ) {
+            latex = match.content.slice(1, -1).trim();
+        }
+
+        if (!latex) {
+            container.textContent = match.content;
+            return container;
+        }
+
+        const mathML = TeXZilla.toMathML(latex, match.display);
         if (mathML) {
             container.innerHTML = new XMLSerializer().serializeToString(mathML);
         } else {
