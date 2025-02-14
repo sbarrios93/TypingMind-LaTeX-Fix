@@ -29,8 +29,7 @@
             try {
                 JSON.parse(content);
                 return true;
-            } catch (e) {
-                // Count JSON-like characters
+            } catch {
                 const jsonChars = (content.match(/[{}\[\]",:]/g) || []).length;
                 return jsonChars / content.length > 0.1;
             }
@@ -92,65 +91,6 @@
         `;
         document.head.appendChild(styles);
     }
-
-    function cleanLatex(latex) {
-        // First, protect \widetilde and similar commands
-        let cleaned = latex.replace(
-            /\\widetilde\{([^}]+)\}/g,
-            '@@WTILDE@@$1@@'
-        );
-
-        // Protect \left and \right pairs
-        cleaned = cleaned
-            .replace(/\\left\s*(\(|\[|\{)/g, '@@LEFT@@$1')
-            .replace(/\\right\s*(\)|\]|\})/g, '@@RIGHT@@$1');
-
-        // Handle nested fractions with parentheses
-        const processFraction = (match, num, den) => {
-            // Process numerator and denominator separately, but don't modify protected tokens
-            return `\\frac{${num}}{${den}}`;
-        };
-
-        // Apply fraction processing repeatedly for nested fractions
-        let prevCleaned;
-        do {
-            prevCleaned = cleaned;
-            cleaned = cleaned.replace(
-                /\\frac\{([^{}]+)\}\{([^{}]+)\}/g,
-                processFraction
-            );
-        } while (cleaned !== prevCleaned);
-
-        // Restore \left and \right
-        cleaned = cleaned
-            .replace(/@@LEFT@@/g, '\\left ')
-            .replace(/@@RIGHT@@/g, '\\right ');
-
-        // Restore protected commands
-        cleaned = cleaned.replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
-
-        return cleaned;
-    }
-
-    function convertToMathML(latex, isDisplay) {
-        try {
-            const cleanedLatex = cleanLatex(latex);
-            const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
-            return new XMLSerializer().serializeToString(mathML);
-        } catch (e) {
-            try {
-                // If cleaning fails, try with minimal cleaning
-                const minimalClean = latex
-                    .replace(/\\widetilde\{([^}]+)\}/g, '@@WTILDE@@$1@@')
-                    .replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
-                const mathML = TeXZilla.toMathML(minimalClean, isDisplay);
-                return new XMLSerializer().serializeToString(mathML);
-            } catch (e) {
-                return null;
-            }
-        }
-    }
-
     function getAdjacentTextNodes(node) {
         const nodes = [];
         let current = node;
@@ -323,7 +263,6 @@
 
         return null;
     }
-
     function findMathDelimiters(text) {
         const segments = [];
         let pos = 0;
@@ -370,6 +309,7 @@
 
         return segments;
     }
+
     function processMathExpression(match) {
         const container = document.createElement('span');
         container.className = 'math-container math-processed';
@@ -377,54 +317,10 @@
             container.setAttribute('data-display', 'block');
         }
 
-        let latex;
-        if (match.content.startsWith('$$') && match.content.endsWith('$$')) {
-            latex = match.content.slice(2, -2).trim();
-        } else if (
-            match.content.startsWith('$') &&
-            match.content.endsWith('$')
-        ) {
-            latex = match.content.slice(1, -1).trim();
-        } else if (
-            match.content.startsWith('[') &&
-            match.content.endsWith(']')
-        ) {
-            latex = match.content.slice(1, -1).trim();
-        } else if (
-            match.content.startsWith('(') &&
-            match.content.endsWith(')')
-        ) {
-            latex = match.content.slice(1, -1).trim();
-        } else if (
-            match.content.startsWith('\\[') &&
-            match.content.endsWith('\\]')
-        ) {
-            latex = match.content.slice(2, -2).trim();
-        } else if (
-            match.content.startsWith('\\(') &&
-            match.content.endsWith('\\)')
-        ) {
-            latex = match.content.slice(2, -2).trim();
-        }
-
-        if (!latex) {
-            container.textContent = match.content;
-            return container;
-        }
-
-        try {
-            const isDisplay =
-                match.content.startsWith('$$') ||
-                match.content.startsWith('\\[') ||
-                match.content.startsWith('[');
-
-            const mathML = convertToMathML(latex, isDisplay);
-            if (mathML) {
-                container.innerHTML = mathML;
-            } else {
-                container.textContent = match.content;
-            }
-        } catch (e) {
+        const mathML = TeXZilla.toMathML(match.content, match.display);
+        if (mathML) {
+            container.innerHTML = new XMLSerializer().serializeToString(mathML);
+        } else {
             container.textContent = match.content;
         }
 
@@ -453,43 +349,37 @@
             return;
         }
 
-        try {
-            const segments = findMathDelimiters(text);
-            if (segments.length === 1 && typeof segments[0] === 'string') {
-                return;
+        const segments = findMathDelimiters(text);
+        if (segments.length === 1 && typeof segments[0] === 'string') {
+            return;
+        }
+
+        const wrapper = document.createElement('span');
+        wrapper.className = 'math-processed-wrapper';
+
+        segments.forEach(segment => {
+            if (typeof segment === 'string') {
+                if (segment) {
+                    wrapper.appendChild(document.createTextNode(segment));
+                }
+            } else if (segment.type === 'math') {
+                const mathElement = processMathExpression(segment);
+                if (mathElement) {
+                    wrapper.appendChild(mathElement);
+                }
             }
+        });
 
-            const wrapper = document.createElement('span');
-            wrapper.className = 'math-processed-wrapper';
-
-            segments.forEach(segment => {
-                if (typeof segment === 'string') {
-                    if (segment) {
-                        wrapper.appendChild(document.createTextNode(segment));
-                    }
-                } else if (segment.type === 'math') {
-                    const mathElement = processMathExpression(segment);
-                    if (mathElement) {
-                        wrapper.appendChild(mathElement);
-                    }
+        const parent = node.parentNode;
+        if (parent) {
+            nodes.forEach(n => {
+                if (n.node && n.node.parentNode) {
+                    n.node.parentNode.removeChild(n.node);
                 }
             });
 
-            const parent = node.parentNode;
-            if (parent) {
-                nodes.forEach(n => {
-                    try {
-                        if (n.node && n.node.parentNode) {
-                            n.node.parentNode.removeChild(n.node);
-                        }
-                    } catch (e) {}
-                });
-
-                try {
-                    parent.appendChild(wrapper);
-                } catch (e) {}
-            }
-        } catch (e) {}
+            parent.appendChild(wrapper);
+        }
     }
 
     function processNodes(nodes) {
@@ -497,9 +387,7 @@
 
         function processNextBatch(deadline) {
             while (index < nodes.length && deadline.timeRemaining() > 0) {
-                try {
-                    processNode(nodes[index++]);
-                } catch (e) {}
+                processNode(nodes[index++]);
             }
 
             if (index < nodes.length) {
@@ -542,18 +430,36 @@
         }
     }
     async function initialize() {
-        try {
-            await loadTeXZilla();
-            injectStyles();
-            processMath();
+        await loadTeXZilla();
+        injectStyles();
+        processMath();
 
-            const observer = new MutationObserver(mutations => {
-                let shouldProcess = false;
-                let newNodes = [];
+        const observer = new MutationObserver(mutations => {
+            let shouldProcess = false;
+            let newNodes = [];
 
-                mutations.forEach(mutation => {
-                    if (mutation.type === 'characterData') {
-                        const node = mutation.target;
+            mutations.forEach(mutation => {
+                if (mutation.type === 'characterData') {
+                    const node = mutation.target;
+                    if (
+                        !node.parentElement?.closest('.math-processed') &&
+                        !isInCodeBlock(node)
+                    ) {
+                        shouldProcess = true;
+                        newNodes.push(node);
+                    }
+                }
+
+                mutation.addedNodes.forEach(node => {
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        if (
+                            !node.closest('.math-processed') &&
+                            !isInCodeBlock(node)
+                        ) {
+                            shouldProcess = true;
+                            newNodes.push(node);
+                        }
+                    } else if (node.nodeType === Node.TEXT_NODE) {
                         if (
                             !node.parentElement?.closest('.math-processed') &&
                             !isInCodeBlock(node)
@@ -562,77 +468,53 @@
                             newNodes.push(node);
                         }
                     }
+                });
+            });
 
-                    mutation.addedNodes.forEach(node => {
+            if (shouldProcess) {
+                requestIdleCallback(() => {
+                    newNodes.forEach(node => {
                         if (node.nodeType === Node.ELEMENT_NODE) {
-                            if (
-                                !node.closest('.math-processed') &&
-                                !isInCodeBlock(node)
-                            ) {
-                                shouldProcess = true;
-                                newNodes.push(node);
+                            const textNodes = [];
+                            const walker = document.createTreeWalker(
+                                node,
+                                NodeFilter.SHOW_TEXT,
+                                {
+                                    acceptNode: textNode => {
+                                        if (
+                                            !isInCodeBlock(textNode) &&
+                                            !textNode.parentElement?.closest(
+                                                '.math-processed'
+                                            )
+                                        ) {
+                                            return NodeFilter.FILTER_ACCEPT;
+                                        }
+                                        return NodeFilter.FILTER_REJECT;
+                                    },
+                                }
+                            );
+
+                            let textNode;
+                            while ((textNode = walker.nextNode())) {
+                                textNodes.push(textNode);
+                            }
+
+                            if (textNodes.length > 0) {
+                                processNodes(textNodes);
                             }
                         } else if (node.nodeType === Node.TEXT_NODE) {
-                            if (
-                                !node.parentElement?.closest(
-                                    '.math-processed'
-                                ) &&
-                                !isInCodeBlock(node)
-                            ) {
-                                shouldProcess = true;
-                                newNodes.push(node);
-                            }
+                            processNode(node);
                         }
                     });
                 });
+            }
+        });
 
-                if (shouldProcess) {
-                    requestIdleCallback(() => {
-                        newNodes.forEach(node => {
-                            try {
-                                if (node.nodeType === Node.ELEMENT_NODE) {
-                                    const textNodes = [];
-                                    const walker = document.createTreeWalker(
-                                        node,
-                                        NodeFilter.SHOW_TEXT,
-                                        {
-                                            acceptNode: textNode => {
-                                                if (
-                                                    !isInCodeBlock(textNode) &&
-                                                    !textNode.parentElement?.closest(
-                                                        '.math-processed'
-                                                    )
-                                                ) {
-                                                    return NodeFilter.FILTER_ACCEPT;
-                                                }
-                                                return NodeFilter.FILTER_REJECT;
-                                            },
-                                        }
-                                    );
-
-                                    let textNode;
-                                    while ((textNode = walker.nextNode())) {
-                                        textNodes.push(textNode);
-                                    }
-
-                                    if (textNodes.length > 0) {
-                                        processNodes(textNodes);
-                                    }
-                                } else if (node.nodeType === Node.TEXT_NODE) {
-                                    processNode(node);
-                                }
-                            } catch (e) {}
-                        });
-                    });
-                }
-            });
-
-            observer.observe(document.body, {
-                childList: true,
-                subtree: true,
-                characterData: true,
-            });
-        } catch (e) {}
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+        });
     }
 
     const LaTeXProcessor = {
@@ -645,35 +527,31 @@
                 return;
             }
 
-            try {
-                const textNodes = [];
-                const walker = document.createTreeWalker(
-                    element,
-                    NodeFilter.SHOW_TEXT,
-                    {
-                        acceptNode: textNode => {
-                            if (
-                                !isInCodeBlock(textNode) &&
-                                !textNode.parentElement?.closest(
-                                    '.math-processed'
-                                )
-                            ) {
-                                return NodeFilter.FILTER_ACCEPT;
-                            }
-                            return NodeFilter.FILTER_REJECT;
-                        },
-                    }
-                );
-
-                let textNode;
-                while ((textNode = walker.nextNode())) {
-                    textNodes.push(textNode);
+            const textNodes = [];
+            const walker = document.createTreeWalker(
+                element,
+                NodeFilter.SHOW_TEXT,
+                {
+                    acceptNode: textNode => {
+                        if (
+                            !isInCodeBlock(textNode) &&
+                            !textNode.parentElement?.closest('.math-processed')
+                        ) {
+                            return NodeFilter.FILTER_ACCEPT;
+                        }
+                        return NodeFilter.FILTER_REJECT;
+                    },
                 }
+            );
 
-                if (textNodes.length > 0) {
-                    processNodes(textNodes);
-                }
-            } catch (e) {}
+            let textNode;
+            while ((textNode = walker.nextNode())) {
+                textNodes.push(textNode);
+            }
+
+            if (textNodes.length > 0) {
+                processNodes(textNodes);
+            }
         },
     };
 
