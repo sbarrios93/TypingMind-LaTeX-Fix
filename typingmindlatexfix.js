@@ -83,148 +83,102 @@
     }
     function getAdjacentTextNodes(node) {
         debugLog('Getting adjacent text nodes');
-        const nodes = [];
-        let current = node;
         let text = '';
+        const nodesToRemove = [];
 
-        // Collect preceding text content
-        while (current && current.previousSibling) {
-            current = current.previousSibling;
-            if (current.nodeType === Node.TEXT_NODE) {
-                text = current.textContent + text;
-                nodes.unshift({
-                    type: 'text',
-                    content: current.textContent,
-                    node: current,
-                });
-            } else if (
-                current.nodeType === Node.ELEMENT_NODE &&
-                ['BR', 'DIV', 'P'].includes(current.tagName)
-            ) {
-                text = '\n' + text;
-                nodes.unshift({
-                    type: 'newline',
-                    node: current,
-                });
-            }
+        // First, find the topmost parent that contains all the text
+        let startNode = node;
+        while (
+            startNode.previousSibling &&
+            (startNode.previousSibling.nodeType === Node.TEXT_NODE ||
+                ['BR', 'DIV', 'P'].includes(startNode.previousSibling.tagName))
+        ) {
+            startNode = startNode.previousSibling;
         }
 
-        // Add current node
-        text += node.textContent;
-        nodes.push({
-            type: 'text',
-            content: node.textContent,
-            node: node,
-        });
-
-        // Collect following text content
-        current = node;
-        while (current && current.nextSibling) {
-            current = current.nextSibling;
+        // Now collect all text and nodes in sequence
+        let current = startNode;
+        while (current) {
             if (current.nodeType === Node.TEXT_NODE) {
                 text += current.textContent;
-                nodes.push({
-                    type: 'text',
-                    content: current.textContent,
-                    node: current,
-                });
-            } else if (
-                current.nodeType === Node.ELEMENT_NODE &&
-                ['BR', 'DIV', 'P'].includes(current.tagName)
-            ) {
+                nodesToRemove.push(current);
+            } else if (['BR', 'DIV', 'P'].includes(current.tagName)) {
                 text += '\n';
-                nodes.push({
-                    type: 'newline',
-                    node: current,
-                });
+                nodesToRemove.push(current);
+            } else {
+                break;
             }
+            current = current.nextSibling;
         }
 
-        debugLog('Combined text:', text);
+        debugLog('Collected text:', text);
         return {
-            nodes: nodes,
-            combinedText: text,
+            text: text,
+            nodes: nodesToRemove,
         };
-    }
-
-    function normalizeDelimiterText(text) {
-        // Preserve backslashes at line endings and normalize newlines
-        return text.replace(/\\\r?\n\s*/g, '\\').replace(/\r?\n\s*/g, ' ');
     }
 
     function findMatchingDelimiter(text, startPos) {
         debugLog('Finding delimiter at position:', startPos);
+        debugLog('Text snippet:', text.substr(startPos, 20));
 
-        // Normalize text while preserving backslash delimiters
-        const normalizedText = normalizeDelimiterText(text);
-        debugLog('Normalized text:', normalizedText);
+        // For backslash delimiters, we need to handle the case where the backslash
+        // might be followed by a newline
+        if (text[startPos] === '\\') {
+            const restOfText = text.slice(startPos);
+            debugLog('Checking backslash delimiter in:', restOfText);
 
-        // Handle backslash delimiters first
-        if (normalizedText[startPos] === '\\') {
-            // Check for display brackets \[...\]
-            if (normalizedText.substring(startPos).startsWith('\\[')) {
-                let pos = startPos + 2;
-                let bracketCount = 1;
-                while (pos < normalizedText.length) {
-                    if (
-                        normalizedText.substring(pos).startsWith('\\]') &&
-                        !normalizedText[pos - 1] === '\\'
-                    ) {
-                        return {
-                            start: startPos,
-                            end: text.indexOf('\\]', startPos + 2) + 2,
-                            delimiter: DELIMITERS.DISPLAY_BRACKETS,
-                            isBackslash: true,
-                        };
-                    }
-                    pos++;
+            // Check for \[ ... \]
+            if (restOfText.match(/^\\\s*\[/)) {
+                const match = restOfText.match(/^\\\s*\[([\s\S]*?)\\\s*\]/);
+                if (match) {
+                    debugLog('Found display bracket match:', match[0]);
+                    return {
+                        start: startPos,
+                        end: startPos + match[0].length,
+                        delimiter: DELIMITERS.DISPLAY_BRACKETS,
+                        isBackslash: true,
+                    };
                 }
             }
 
-            // Check for inline parentheses \(...\)
-            if (normalizedText.substring(startPos).startsWith('\\(')) {
-                let pos = startPos + 2;
-                let parenCount = 1;
-                while (pos < normalizedText.length) {
-                    if (
-                        normalizedText.substring(pos).startsWith('\\)') &&
-                        !normalizedText[pos - 1] === '\\'
-                    ) {
-                        return {
-                            start: startPos,
-                            end: text.indexOf('\\)', startPos + 2) + 2,
-                            delimiter: DELIMITERS.INLINE_PARENS,
-                            isBackslash: true,
-                        };
-                    }
-                    pos++;
+            // Check for \( ... \)
+            if (restOfText.match(/^\\\s*\(/)) {
+                const match = restOfText.match(/^\\\s*\(([\s\S]*?)\\\s*\)/);
+                if (match) {
+                    debugLog('Found inline paren match:', match[0]);
+                    return {
+                        start: startPos,
+                        end: startPos + match[0].length,
+                        delimiter: DELIMITERS.INLINE_PARENS,
+                        isBackslash: true,
+                    };
                 }
             }
         }
 
         // Handle dollar delimiters
-        if (normalizedText.startsWith('$$', startPos)) {
-            const endPos = normalizedText.indexOf('$$', startPos + 2);
+        if (text.startsWith('$$', startPos)) {
+            const endPos = text.indexOf('$$', startPos + 2);
             if (endPos !== -1) {
+                debugLog('Found display dollar match');
                 return {
                     start: startPos,
-                    end: text.indexOf('$$', startPos + 2) + 2,
+                    end: endPos + 2,
                     delimiter: DELIMITERS.DISPLAY_DOLLARS,
                     isBackslash: false,
                 };
             }
         }
 
-        if (normalizedText[startPos] === '$') {
+        if (text[startPos] === '$') {
             let pos = startPos + 1;
-            while (pos < normalizedText.length) {
-                if (
-                    normalizedText[pos] === '$' &&
-                    normalizedText[pos - 1] !== '\\'
-                ) {
+            while (pos < text.length) {
+                if (text[pos] === '$' && text[pos - 1] !== '\\') {
+                    debugLog('Found inline dollar match');
                     return {
                         start: startPos,
-                        end: text.indexOf('$', startPos + 1) + 1,
+                        end: pos + 1,
                         delimiter: DELIMITERS.INLINE_DOLLARS,
                         isBackslash: false,
                     };
@@ -242,6 +196,9 @@
         let pos = 0;
         let lastPos = 0;
 
+        text = text.replace(/\r\n/g, '\n'); // Normalize newlines
+        debugLog('Normalized text:', text);
+
         while (pos < text.length) {
             let found = false;
 
@@ -251,7 +208,7 @@
             ) {
                 const match = findMatchingDelimiter(text, pos);
                 if (match) {
-                    debugLog('Found delimiter match:', match);
+                    debugLog('Found match:', match);
                     if (pos > lastPos) {
                         segments.push(text.slice(lastPos, pos));
                     }
@@ -292,38 +249,32 @@
         let latex;
         if (match.isBackslash) {
             // Handle backslash delimiters
-            for (const del of [
-                DELIMITERS.DISPLAY_BRACKETS,
-                DELIMITERS.INLINE_PARENS,
-            ]) {
-                if (
-                    match.content.startsWith(del.start) &&
-                    match.content.endsWith(del.end)
-                ) {
-                    latex = match.content
-                        .slice(del.start.length, -del.end.length)
-                        .trim();
-                    debugLog('Extracted LaTeX from backslash:', latex);
-                    break;
-                }
+            if (
+                match.content.startsWith('\\[') &&
+                match.content.endsWith('\\]')
+            ) {
+                latex = match.content.slice(2, -2).trim();
+            } else if (
+                match.content.startsWith('\\(') &&
+                match.content.endsWith('\\)')
+            ) {
+                latex = match.content.slice(2, -2).trim();
             }
+            debugLog('Extracted LaTeX from backslash:', latex);
         } else {
             // Handle dollar delimiters
-            for (const del of [
-                DELIMITERS.DISPLAY_DOLLARS,
-                DELIMITERS.INLINE_DOLLARS,
-            ]) {
-                if (
-                    match.content.startsWith(del.start) &&
-                    match.content.endsWith(del.end)
-                ) {
-                    latex = match.content
-                        .slice(del.start.length, -del.end.length)
-                        .trim();
-                    debugLog('Extracted LaTeX from dollars:', latex);
-                    break;
-                }
+            if (
+                match.content.startsWith('$$') &&
+                match.content.endsWith('$$')
+            ) {
+                latex = match.content.slice(2, -2).trim();
+            } else if (
+                match.content.startsWith('$') &&
+                match.content.endsWith('$')
+            ) {
+                latex = match.content.slice(1, -1).trim();
             }
+            debugLog('Extracted LaTeX from dollars:', latex);
         }
 
         if (!latex) {
@@ -331,6 +282,10 @@
             container.textContent = match.content;
             return container;
         }
+
+        // Clean up any newlines in the LaTeX content
+        latex = latex.replace(/\s*\n\s*/g, ' ').trim();
+        debugLog('Cleaned LaTeX:', latex);
 
         const mathML = convertToMathML(latex, isDisplay);
         if (mathML) {
@@ -348,23 +303,32 @@
         }
 
         debugLog('Processing node:', node.textContent);
-        const { nodes, combinedText } = getAdjacentTextNodes(node);
+        const { text, nodes } = getAdjacentTextNodes(node);
 
-        // Check for any math delimiters
+        // Check for delimiters in the complete text
         let hasDelimiter = false;
         for (const del of Object.values(DELIMITERS)) {
-            if (combinedText.includes(del.start)) {
+            // For backslash delimiters, check for both parts
+            if (del.start.startsWith('\\')) {
+                const startChar = del.start.charAt(1);
+                const endChar = del.end.charAt(1);
+                if (text.includes(startChar) && text.includes(endChar)) {
+                    hasDelimiter = true;
+                    break;
+                }
+            } else if (text.includes(del.start)) {
                 hasDelimiter = true;
                 break;
             }
         }
 
         if (!hasDelimiter) {
-            debugLog('No delimiters found in text');
+            debugLog('No delimiters found');
             return;
         }
 
-        const segments = findMathDelimiters(combinedText);
+        // Process the complete text
+        const segments = findMathDelimiters(text);
         if (segments.length === 1 && typeof segments[0] === 'string') {
             debugLog('Only one text segment found, no processing needed');
             return;
@@ -376,7 +340,8 @@
         segments.forEach(segment => {
             if (typeof segment === 'string') {
                 if (segment) {
-                    wrapper.appendChild(document.createTextNode(segment));
+                    const textNode = document.createTextNode(segment);
+                    wrapper.appendChild(textNode);
                 }
             } else if (segment.type === 'math') {
                 const mathElement = processMathExpression(
@@ -389,18 +354,15 @@
             }
         });
 
-        // Replace the original nodes with the processed content
+        // Replace all collected nodes with the wrapper
         const parent = node.parentNode;
         if (parent) {
+            const firstNode = nodes[0];
             nodes.forEach(n => {
-                if (n.type === 'newline' && n.node.parentNode) {
-                    n.node.parentNode.removeChild(n.node);
-                } else if (n.type === 'text' && n.node && n.node.parentNode) {
-                    n.node.parentNode.removeChild(n.node);
+                if (n.parentNode) {
+                    n.parentNode.removeChild(n);
                 }
             });
-
-            const firstNode = nodes[0].node;
             if (firstNode && firstNode.parentNode) {
                 parent.insertBefore(wrapper, firstNode);
             } else {
@@ -473,20 +435,25 @@
                 let shouldProcess = false;
                 let newNodes = [];
 
-                for (const mutation of mutations) {
-                    if (mutation.addedNodes.length > 0) {
-                        mutation.addedNodes.forEach(node => {
+                mutations.forEach(mutation => {
+                    mutation.addedNodes.forEach(node => {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
                             // Check if the node or its parents are already processed
+                            if (!node.closest('.math-processed')) {
+                                shouldProcess = true;
+                                newNodes.push(node);
+                            }
+                        } else if (node.nodeType === Node.TEXT_NODE) {
+                            // For text nodes, check parent
                             if (
-                                node.nodeType === Node.ELEMENT_NODE &&
-                                !node.closest('.math-processed')
+                                !node.parentElement?.closest('.math-processed')
                             ) {
                                 shouldProcess = true;
                                 newNodes.push(node);
                             }
-                        });
-                    }
-                }
+                        }
+                    });
+                });
 
                 if (shouldProcess) {
                     debugLog(`Processing ${newNodes.length} new nodes`);
@@ -520,6 +487,8 @@
                                 if (textNodes.length > 0) {
                                     processNodes(textNodes);
                                 }
+                            } else if (node.nodeType === Node.TEXT_NODE) {
+                                processNode(node);
                             }
                         });
                     });
@@ -529,6 +498,7 @@
             observer.observe(document.body, {
                 childList: true,
                 subtree: true,
+                characterData: true,
             });
 
             debugLog('Initialization complete');
@@ -545,17 +515,46 @@
         initialize();
     }
 
-    // Expose debug toggle for development
+    // Expose debug toggle and reprocess function
     if (typeof window !== 'undefined') {
         window.toggleLaTeXDebug = function (enable = true) {
             window.DEBUG_LATEX = enable;
             debugLog('Debug mode ' + (enable ? 'enabled' : 'disabled'));
         };
 
-        // Expose reprocess function for manual triggering
         window.reprocessLaTeX = function () {
             debugLog('Manually triggering LaTeX processing');
             processMath();
+        };
+
+        // Add a function to process specific content
+        window.processLaTeXContent = function (element) {
+            debugLog('Processing specific element:', element);
+            const textNodes = [];
+            const walker = document.createTreeWalker(
+                element,
+                NodeFilter.SHOW_TEXT,
+                {
+                    acceptNode: textNode => {
+                        if (
+                            !isInCodeBlock(textNode) &&
+                            !textNode.parentElement?.closest('.math-processed')
+                        ) {
+                            return NodeFilter.FILTER_ACCEPT;
+                        }
+                        return NodeFilter.FILTER_REJECT;
+                    },
+                }
+            );
+
+            let textNode;
+            while ((textNode = walker.nextNode())) {
+                textNodes.push(textNode);
+            }
+
+            if (textNodes.length > 0) {
+                processNodes(textNodes);
+            }
         };
     }
 })();
