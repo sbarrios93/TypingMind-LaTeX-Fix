@@ -100,31 +100,10 @@
             '@@WTILDE@@$1@@'
         );
 
-        // Protect \left and \right pairs
+        // Only normalize spacing in \left and \right pairs, don't replace anything
         cleaned = cleaned
-            .replace(/\\left\s*(\(|\[|\{)/g, '@@LEFT@@$1')
-            .replace(/\\right\s*(\)|\]|\})/g, '@@RIGHT@@$1');
-
-        // Handle nested fractions with parentheses
-        const processFraction = (match, num, den) => {
-            // Process numerator and denominator separately, but don't modify protected tokens
-            return `\\frac{${num}}{${den}}`;
-        };
-
-        // Apply fraction processing repeatedly for nested fractions
-        let prevCleaned;
-        do {
-            prevCleaned = cleaned;
-            cleaned = cleaned.replace(
-                /\\frac\{([^{}]+)\}\{([^{}]+)\}/g,
-                processFraction
-            );
-        } while (cleaned !== prevCleaned);
-
-        // Restore \left and \right
-        cleaned = cleaned
-            .replace(/@@LEFT@@/g, '\\left ')
-            .replace(/@@RIGHT@@/g, '\\right ');
+            .replace(/\\left\s*(\(|\[|\{)/g, '\\left$1')
+            .replace(/\\right\s*(\)|\]|\})/g, '\\right$1');
 
         // Restore protected commands
         cleaned = cleaned.replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
