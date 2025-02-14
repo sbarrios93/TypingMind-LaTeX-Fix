@@ -26,7 +26,7 @@ There are different ways to overcome these problems, some including modifying yo
 This extension attempts to solve all of these problems. **It is fully functional.**
 
 To get this to work, simply add the following link into your TypingMind extensions:
-https://cdn.jsdelivr.net/gh/pesschap/TypingMind-LaTeX-Fix@main/typingmindlatexfix.js
+https://cdn.jsdelivr.net/gh/pesschap/TypingMind-LaTeX-Fix@latest/typingmindlatexfix.js
 
 **I am cognisant that I may have been mistakenly referencing 'LaTeX' wrongly.**
 
