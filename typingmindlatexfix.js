@@ -100,10 +100,16 @@
             '@@WTILDE@@$1@@'
         );
 
-        // Only normalize spacing in \left and \right pairs, don't replace anything
-        cleaned = cleaned
-            .replace(/\\left\s*(\(|\[|\{)/g, '\\left$1')
-            .replace(/\\right\s*(\)|\]|\})/g, '\\right$1');
+        // Protect \left...\right pairs by temporarily replacing them
+        cleaned = cleaned.replace(
+            /(\\left\s*[\(\[\{])(.*?)(\\right\s*[\)\]\}])/g,
+            (match, left, content, right) => {
+                // Keep the \left...\right pair exactly as is, just normalize spaces
+                left = left.replace(/\s+/g, ' ');
+                right = right.replace(/\s+/g, ' ');
+                return left + content + right;
+            }
+        );
 
         // Restore protected commands
         cleaned = cleaned.replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
