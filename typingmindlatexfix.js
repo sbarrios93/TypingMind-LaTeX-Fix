@@ -12,15 +12,21 @@
         teXZillaLoaded: false,
     };
 
-    // Utility functions
+    // Debug utility function
+    function debugLog(message, data = null) {
+        console.log(`[LaTeX Debug] ${message}`, data || '');
+    }
+
     async function loadTeXZilla() {
         if (state.teXZillaLoaded) return;
+        debugLog('Loading TeXZilla...');
 
         return new Promise((resolve, reject) => {
             const script = document.createElement('script');
             script.src = 'https://fred-wang.github.io/TeXZilla/TeXZilla-min.js';
             script.onload = () => {
                 state.teXZillaLoaded = true;
+                debugLog('TeXZilla loaded successfully');
                 resolve();
             };
             script.onerror = reject;
@@ -51,6 +57,7 @@
             }
         `;
         document.head.appendChild(styles);
+        debugLog('Styles injected');
     }
 
     function isInCodeBlock(element) {
@@ -65,6 +72,7 @@
     }
 
     function convertToMathML(latex, isDisplay) {
+        debugLog('Converting to MathML:', { latex, isDisplay });
         try {
             const mathML = TeXZilla.toMathML(latex, isDisplay);
             return new XMLSerializer().serializeToString(mathML);
@@ -73,91 +81,140 @@
             return null;
         }
     }
+
     function getAdjacentTextNodes(node) {
+        debugLog('Getting adjacent text nodes for:', node.textContent);
         const nodes = [];
         let current = node;
 
         // Get preceding text nodes
         while (current.previousSibling) {
             if (current.previousSibling.nodeType === Node.TEXT_NODE) {
+                debugLog(
+                    'Found preceding text node:',
+                    current.previousSibling.textContent
+                );
                 nodes.unshift(current.previousSibling);
             } else if (
                 current.previousSibling.nodeType === Node.ELEMENT_NODE &&
                 ['BR', 'DIV', 'P'].includes(current.previousSibling.tagName)
             ) {
-                // Enhanced newline handling for backslash delimiters
-                const prevText = current.previousSibling.textContent;
-                if (prevText && prevText.trim().endsWith('\\')) {
-                    nodes.unshift({
-                        type: 'newline',
-                        node: current.previousSibling,
-                        preserveBackslash: true,
-                    });
-                } else {
-                    nodes.unshift({
-                        type: 'newline',
-                        node: current.previousSibling,
-                    });
-                }
+                debugLog(
+                    'Found preceding newline node:',
+                    current.previousSibling.tagName
+                );
+                nodes.unshift({
+                    type: 'newline',
+                    node: current.previousSibling,
+                    preserveBackslash: current.previousSibling.textContent
+                        .trim()
+                        .endsWith('\\'),
+                });
             } else {
                 break;
             }
             current = current.previousSibling;
         }
 
-        // Add current node
         nodes.push(node);
+        debugLog('Added current node:', node.textContent);
 
         // Get following text nodes
         current = node;
         while (current.nextSibling) {
             if (current.nextSibling.nodeType === Node.TEXT_NODE) {
+                debugLog(
+                    'Found following text node:',
+                    current.nextSibling.textContent
+                );
                 nodes.push(current.nextSibling);
             } else if (
                 current.nextSibling.nodeType === Node.ELEMENT_NODE &&
                 ['BR', 'DIV', 'P'].includes(current.nextSibling.tagName)
             ) {
-                // Enhanced newline handling for following nodes
-                const nextText = current.nextSibling.textContent;
-                if (nextText && nextText.trim().startsWith('\\')) {
-                    nodes.push({
-                        type: 'newline',
-                        node: current.nextSibling,
-                        preserveBackslash: true,
-                    });
-                } else {
-                    nodes.push({
-                        type: 'newline',
-                        node: current.nextSibling,
-                    });
-                }
+                debugLog(
+                    'Found following newline node:',
+                    current.nextSibling.tagName
+                );
+                nodes.push({
+                    type: 'newline',
+                    node: current.nextSibling,
+                    preserveBackslash: current.nextSibling.textContent
+                        .trim()
+                        .startsWith('\\'),
+                });
             } else {
                 break;
             }
             current = current.nextSibling;
         }
 
+        debugLog('Total nodes found:', nodes.length);
         return nodes;
     }
 
     function findMatchingDelimiter(text, startPos) {
-        // Handle display dollars ($$...$$)
-        if (text.startsWith('$$', startPos)) {
-            let pos = startPos + 2;
-            while (pos < text.length - 1) {
-                if (text.startsWith('$$', pos) && text[pos - 1] !== '\\') {
-                    return {
-                        start: startPos,
-                        end: pos + 2,
-                        delimiter: DELIMITERS.DISPLAY_DOLLARS,
-                    };
+        debugLog('Finding delimiter at position:', startPos);
+        debugLog('Text snippet:', text.substr(startPos, 20));
+
+        if (text[startPos] === '\\') {
+            debugLog('Found backslash delimiter');
+            debugLog('Full text being processed:', text);
+
+            // Log character codes for debugging
+            const nextFewChars = Array.from(text.substr(startPos, 10)).map(
+                c => ({
+                    char: c,
+                    code: c.charCodeAt(0),
+                })
+            );
+            debugLog('Character codes:', nextFewChars);
+
+            for (const del of [
+                DELIMITERS.DISPLAY_BRACKETS,
+                DELIMITERS.INLINE_PARENS,
+            ]) {
+                if (text.substring(startPos).startsWith(del.start)) {
+                    debugLog('Matched start delimiter:', del.start);
+                    let pos = startPos + del.start.length;
+                    let bracketCount = 1;
+
+                    while (pos < text.length) {
+                        if (text.substring(pos).startsWith(del.end)) {
+                            bracketCount--;
+                            if (bracketCount === 0) {
+                                debugLog(
+                                    'Found matching end delimiter at:',
+                                    pos
+                                );
+                                return {
+                                    start: startPos,
+                                    end: pos + del.end.length,
+                                    delimiter: del,
+                                };
+                            }
+                        }
+                        pos++;
+                    }
                 }
-                pos++;
             }
         }
 
-        // Handle inline dollars ($...$)
+        // Handle dollars
+        if (text.startsWith('$$', startPos)) {
+            debugLog('Found display dollars');
+            const endPos = text.indexOf('$$', startPos + 2);
+            if (endPos !== -1) {
+                return {
+                    start: startPos,
+                    end: endPos + 2,
+                    delimiter: DELIMITERS.DISPLAY_DOLLARS,
+                };
+            }
+        }
+
         if (text[startPos] === '$') {
+            debugLog('Found inline dollars');
             let pos = startPos + 1;
             while (pos < text.length) {
                 if (text[pos] === '$' && text[pos - 1] !== '\\') {
@@ -171,86 +228,35 @@
             }
         }
 
-        // Enhanced handling for backslash delimiters
-        if (text[startPos] === '\\') {
-            for (const del of [
-                DELIMITERS.DISPLAY_BRACKETS,
-                DELIMITERS.INLINE_PARENS,
-            ]) {
-                const startDelimiter = del.start;
-                const endDelimiter = del.end;
-
-                if (text.substring(startPos).startsWith(startDelimiter)) {
-                    let pos = startPos + startDelimiter.length;
-                    let escaped = false;
-                    let bracketCount = 1;
-
-                    while (pos < text.length) {
-                        // Handle escaped characters
-                        if (text[pos] === '\\' && !escaped) {
-                            escaped = true;
-                            pos++;
-                            continue;
-                        }
-
-                        // Check for nested delimiters
-                        if (!escaped) {
-                            if (
-                                text.substring(pos).startsWith(startDelimiter)
-                            ) {
-                                bracketCount++;
-                            } else if (
-                                text.substring(pos).startsWith(endDelimiter)
-                            ) {
-                                bracketCount--;
-                                if (bracketCount === 0) {
-                                    return {
-                                        start: startPos,
-                                        end: pos + endDelimiter.length,
-                                        delimiter: del,
-                                    };
-                                }
-                            }
-                        }
-
-                        escaped = false;
-                        pos++;
-                    }
-                }
-            }
-        }
-
         return null;
     }
+
     function findMathDelimiters(text) {
+        debugLog('Finding math delimiters in text:', text);
         const segments = [];
         let pos = 0;
         let lastPos = 0;
 
-        // Normalize line endings
         text = text.replace(/\r\n/g, '\n');
 
         while (pos < text.length) {
             let found = false;
 
-            // Check for potential delimiters
             if (
                 (text[pos] === '$' || text[pos] === '\\') &&
                 !(pos > 0 && text[pos - 1] === '\\')
             ) {
                 const match = findMatchingDelimiter(text, pos);
                 if (match) {
+                    debugLog('Found match:', match);
                     if (pos > lastPos) {
                         segments.push(text.slice(lastPos, pos));
                     }
 
-                    // Extract the complete math expression
-                    const content = text.slice(match.start, match.end);
                     segments.push({
                         type: 'math',
-                        content: content,
+                        content: text.slice(match.start, match.end),
                         display: match.delimiter.display,
-                        isBackslash: content.startsWith('\\'),
                     });
 
                     lastPos = match.end;
@@ -268,10 +274,12 @@
             segments.push(text.slice(lastPos));
         }
 
+        debugLog('Found segments:', segments);
         return segments;
     }
 
     function processMathExpression(match, isDisplay) {
+        debugLog('Processing math expression:', match);
         const container = document.createElement('span');
         container.className = 'math-container math-processed';
         if (isDisplay) {
@@ -279,39 +287,14 @@
         }
 
         let latex;
-        if (match.isBackslash) {
-            // Handle backslash delimiters
-            for (const del of [
-                DELIMITERS.DISPLAY_BRACKETS,
-                DELIMITERS.INLINE_PARENS,
-            ]) {
-                if (
-                    match.content.startsWith(del.start) &&
-                    match.content.endsWith(del.end)
-                ) {
-                    latex = match.content.slice(
-                        del.start.length,
-                        -del.end.length
-                    );
-                    break;
-                }
-            }
-        } else {
-            // Handle dollar delimiters
-            for (const del of [
-                DELIMITERS.DISPLAY_DOLLARS,
-                DELIMITERS.INLINE_DOLLARS,
-            ]) {
-                if (
-                    match.content.startsWith(del.start) &&
-                    match.content.endsWith(del.end)
-                ) {
-                    latex = match.content.slice(
-                        del.start.length,
-                        -del.end.length
-                    );
-                    break;
-                }
+        for (const del of Object.values(DELIMITERS)) {
+            if (
+                match.content.startsWith(del.start) &&
+                match.content.endsWith(del.end)
+            ) {
+                latex = match.content.slice(del.start.length, -del.end.length);
+                debugLog('Extracted LaTeX:', latex);
+                break;
             }
         }
 
@@ -320,7 +303,6 @@
             return container;
         }
 
-        // Convert to MathML and render
         const mathML = convertToMathML(latex, isDisplay);
         if (mathML) {
             container.innerHTML = mathML;
@@ -336,23 +318,29 @@
             return;
         }
 
+        debugLog('Processing node:', node.textContent);
         const adjacentNodes = getAdjacentTextNodes(node);
+
+        // Debug logging for adjacent nodes
+        debugLog('Adjacent nodes found:', adjacentNodes.length);
+        adjacentNodes.forEach((n, i) => {
+            if (n.type === 'newline') {
+                debugLog(`Node ${i}: newline`);
+            } else {
+                debugLog(`Node ${i}: "${n.textContent}"`);
+            }
+        });
+
         let combinedText = '';
         let lastWasNewline = false;
 
-        // Improved text combination for multiline content
         adjacentNodes.forEach(n => {
             if (n.type === 'newline') {
-                if (n.preserveBackslash) {
-                    combinedText += '\n\\'; // Preserve backslash at line end
-                } else {
-                    combinedText += '\n';
-                }
+                combinedText += '\n';
                 lastWasNewline = true;
             } else {
                 if (lastWasNewline && n.textContent.startsWith('\\')) {
-                    // Don't add extra backslash if the text already starts with one
-                    combinedText += n.textContent.substring(1);
+                    combinedText += n.textContent;
                 } else {
                     combinedText += n.textContent;
                 }
@@ -360,7 +348,8 @@
             }
         });
 
-        // Check for any math delimiters
+        debugLog('Combined text:', combinedText);
+
         let hasDelimiter = false;
         for (const del of Object.values(DELIMITERS)) {
             if (combinedText.includes(del.start)) {
@@ -370,7 +359,6 @@
         }
         if (!hasDelimiter) return;
 
-        // Process the segments
         const segments = findMathDelimiters(combinedText);
         if (segments.length === 1 && typeof segments[0] === 'string') {
             return;
@@ -395,7 +383,6 @@
             }
         });
 
-        // Replace the original nodes with the processed content
         const parent = node.parentNode;
         if (parent) {
             adjacentNodes.forEach(n => {
@@ -414,6 +401,7 @@
             }
         }
     }
+
     function processNodes(nodes) {
         let index = 0;
 
@@ -452,6 +440,7 @@
         while ((node = walker.nextNode())) {
             nodes.push(node);
         }
+        debugLog('Found text nodes:', nodes.length);
         return nodes;
     }
 
@@ -462,81 +451,24 @@
         }
     }
 
-    // Debug utility function
-    function debugLog(message, data = null) {
-        if (typeof window !== 'undefined' && window.DEBUG_LATEX) {
-            console.log(`[LaTeX Debug] ${message}`, data || '');
-        }
-    }
-
-    // Enhanced initialization with error handling
     async function initialize() {
         try {
             debugLog('Initializing LaTeX converter...');
             await loadTeXZilla();
-            debugLog('TeXZilla loaded successfully');
-
             injectStyles();
-            debugLog('Styles injected');
-
-            // Initial processing
             processMath();
-            debugLog('Initial math processing complete');
 
-            // Enhanced mutation observer for dynamic content
             const observer = new MutationObserver(mutations => {
                 let shouldProcess = false;
-                let newNodes = [];
-
                 for (const mutation of mutations) {
                     if (mutation.addedNodes.length > 0) {
                         shouldProcess = true;
-                        mutation.addedNodes.forEach(node => {
-                            if (node.nodeType === Node.ELEMENT_NODE) {
-                                // Check if the node or its parents are already processed
-                                if (!node.closest('.math-processed')) {
-                                    newNodes.push(node);
-                                }
-                            }
-                        });
+                        break;
                     }
                 }
-
-                if (shouldProcess && newNodes.length > 0) {
-                    debugLog(`Processing ${newNodes.length} new nodes`);
-                    requestIdleCallback(() => {
-                        newNodes.forEach(node => {
-                            if (node.nodeType === Node.ELEMENT_NODE) {
-                                const textNodes = [];
-                                const walker = document.createTreeWalker(
-                                    node,
-                                    NodeFilter.SHOW_TEXT,
-                                    {
-                                        acceptNode: textNode => {
-                                            if (
-                                                !isInCodeBlock(textNode) &&
-                                                !textNode.parentElement?.closest(
-                                                    '.math-processed'
-                                                )
-                                            ) {
-                                                return NodeFilter.FILTER_ACCEPT;
-                                            }
-                                            return NodeFilter.FILTER_REJECT;
-                                        },
-                                    }
-                                );
-
-                                let textNode;
-                                while ((textNode = walker.nextNode())) {
-                                    textNodes.push(textNode);
-                                }
-
-                                if (textNodes.length > 0) {
-                                    processNodes(textNodes);
-                                }
-                            }
-                        });
-                    });
+                if (shouldProcess) {
+                    debugLog('New nodes detected, processing...');
+                    requestIdleCallback(processMath);
                 }
             });
 
@@ -545,25 +477,15 @@
                 subtree: true,
             });
 
-            debugLog('Mutation observer set up');
+            debugLog('Initialization complete');
         } catch (error) {
             console.error('Error initializing LaTeX converter:', error);
-            debugLog('Initialization error:', error);
         }
     }
 
-    // Start the extension with proper timing
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initialize);
     } else {
         initialize();
-    }
-
-    // Expose debug toggle for development
-    if (typeof window !== 'undefined') {
-        window.toggleLaTeXDebug = function (enable = true) {
-            window.DEBUG_LATEX = enable;
-            debugLog('Debug mode ' + (enable ? 'enabled' : 'disabled'));
-        };
     }
 })();
