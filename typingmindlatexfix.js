@@ -94,25 +94,56 @@
     }
 
     function cleanLatex(latex) {
-        // Only protect \widetilde, nothing else
+        // First, protect \widetilde and similar commands
         let cleaned = latex.replace(
             /\\widetilde\{([^}]+)\}/g,
             '@@WTILDE@@$1@@'
         );
+
+        // Protect \left and \right pairs
+        cleaned = cleaned
+            .replace(/\\left\s*(\(|\[|\{)/g, '@@LEFT@@$1')
+            .replace(/\\right\s*(\)|\]|\})/g, '@@RIGHT@@$1');
+
+        // Handle nested fractions with parentheses
+        const processFraction = (match, num, den) => {
+            // Process numerator and denominator separately, but don't modify protected tokens
+            return `\\frac{${num}}{${den}}`;
+        };
+
+        // Apply fraction processing repeatedly for nested fractions
+        let prevCleaned;
+        do {
+            prevCleaned = cleaned;
+            cleaned = cleaned.replace(
+                /\\frac\{([^{}]+)\}\{([^{}]+)\}/g,
+                processFraction
+            );
+        } while (cleaned !== prevCleaned);
+
+        // Restore \left and \right
+        cleaned = cleaned
+            .replace(/@@LEFT@@/g, '\\left ')
+            .replace(/@@RIGHT@@/g, '\\right ');
+
+        // Restore protected commands
         cleaned = cleaned.replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
+
         return cleaned;
     }
 
     function convertToMathML(latex, isDisplay) {
         try {
-            // Try with minimal cleaning first
-            const mathML = TeXZilla.toMathML(latex, isDisplay);
+            const cleanedLatex = cleanLatex(latex);
+            const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
             return new XMLSerializer().serializeToString(mathML);
         } catch (e) {
             try {
-                // If that fails, try with cleaned version
-                const cleanedLatex = cleanLatex(latex);
-                const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
+                // If cleaning fails, try with minimal cleaning
+                const minimalClean = latex
+                    .replace(/\\widetilde\{([^}]+)\}/g, '@@WTILDE@@$1@@')
+                    .replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
+                const mathML = TeXZilla.toMathML(minimalClean, isDisplay);
                 return new XMLSerializer().serializeToString(mathML);
             } catch (e) {
                 return null;
@@ -339,7 +370,6 @@
 
         return segments;
     }
-
     function processMathExpression(match) {
         const container = document.createElement('span');
         container.className = 'math-container math-processed';
@@ -347,13 +377,50 @@
             container.setAttribute('data-display', 'block');
         }
 
+        let latex;
+        if (match.content.startsWith('$$') && match.content.endsWith('$$')) {
+            latex = match.content.slice(2, -2).trim();
+        } else if (
+            match.content.startsWith('$') &&
+            match.content.endsWith('$')
+        ) {
+            latex = match.content.slice(1, -1).trim();
+        } else if (
+            match.content.startsWith('[') &&
+            match.content.endsWith(']')
+        ) {
+            latex = match.content.slice(1, -1).trim();
+        } else if (
+            match.content.startsWith('(') &&
+            match.content.endsWith(')')
+        ) {
+            latex = match.content.slice(1, -1).trim();
+        } else if (
+            match.content.startsWith('\\[') &&
+            match.content.endsWith('\\]')
+        ) {
+            latex = match.content.slice(2, -2).trim();
+        } else if (
+            match.content.startsWith('\\(') &&
+            match.content.endsWith('\\)')
+        ) {
+            latex = match.content.slice(2, -2).trim();
+        }
+
+        if (!latex) {
+            container.textContent = match.content;
+            return container;
+        }
+
         try {
-            // Don't extract the content - pass the entire expression to TeXZilla
-            const mathML = TeXZilla.toMathML(match.content, match.display);
+            const isDisplay =
+                match.content.startsWith('$$') ||
+                match.content.startsWith('\\[') ||
+                match.content.startsWith('[');
+
+            const mathML = convertToMathML(latex, isDisplay);
             if (mathML) {
-                container.innerHTML = new XMLSerializer().serializeToString(
-                    mathML
-                );
+                container.innerHTML = mathML;
             } else {
                 container.textContent = match.content;
             }
