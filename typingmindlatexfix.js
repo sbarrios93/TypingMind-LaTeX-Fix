@@ -57,7 +57,6 @@
             }
         `;
         document.head.appendChild(styles);
-        debugLog('Styles injected');
     }
 
     function isInCodeBlock(element) {
@@ -72,7 +71,6 @@
     }
 
     function convertToMathML(latex, isDisplay) {
-        debugLog('Converting to MathML:', { latex, isDisplay });
         try {
             const mathML = TeXZilla.toMathML(latex, isDisplay);
             return new XMLSerializer().serializeToString(mathML);
@@ -81,109 +79,190 @@
             return null;
         }
     }
-    function getAdjacentTextNodes(node) {
-        debugLog('Getting adjacent text nodes');
-        let text = '';
-        const nodesToRemove = [];
 
-        // First, find the topmost parent that contains all the text
-        let startNode = node;
-        while (
-            startNode.previousSibling &&
-            (startNode.previousSibling.nodeType === Node.TEXT_NODE ||
-                ['BR', 'DIV', 'P'].includes(startNode.previousSibling.tagName))
-        ) {
-            startNode = startNode.previousSibling;
+    function reconstructDelimiters(text) {
+        // First, handle existing dollar delimiters (preserve them)
+        const segments = [];
+        let pos = 0;
+        let lastPos = 0;
+
+        while (pos < text.length) {
+            if (text[pos] === '$') {
+                if (pos + 1 < text.length && text[pos + 1] === '$') {
+                    // Found $$, skip to end
+                    const endPos = text.indexOf('$$', pos + 2);
+                    if (endPos !== -1) {
+                        if (pos > lastPos)
+                            segments.push(text.slice(lastPos, pos));
+                        segments.push(text.slice(pos, endPos + 2));
+                        pos = endPos + 2;
+                        lastPos = pos;
+                        continue;
+                    }
+                } else {
+                    // Found single $, skip to end
+                    const endPos = text.indexOf('$', pos + 1);
+                    if (endPos !== -1) {
+                        if (pos > lastPos)
+                            segments.push(text.slice(lastPos, pos));
+                        segments.push(text.slice(pos, endPos + 1));
+                        pos = endPos + 1;
+                        lastPos = pos;
+                        continue;
+                    }
+                }
+            }
+            pos++;
         }
 
-        // Now collect all text and nodes in sequence
-        let current = startNode;
-        while (current) {
-            if (current.nodeType === Node.TEXT_NODE) {
-                text += current.textContent;
-                nodesToRemove.push(current);
-            } else if (['BR', 'DIV', 'P'].includes(current.tagName)) {
+        if (lastPos < text.length) {
+            segments.push(text.slice(lastPos));
+        }
+
+        // Now process each non-dollar segment for brackets and parentheses
+        return segments
+            .map(segment => {
+                if (segment.startsWith('$')) {
+                    return segment; // Preserve dollar segments as-is
+                }
+
+                // Handle display brackets
+                segment = segment.replace(
+                    /\[([\s\S]*?)\]/g,
+                    (match, content) => {
+                        // Verify this isn't part of a command or other LaTeX construct
+                        if (
+                            content.includes('\n') ||
+                            /^[^{}\[\]]*$/.test(content)
+                        ) {
+                            return `\\[${content}\\]`;
+                        }
+                        return match;
+                    }
+                );
+
+                // Handle inline parentheses
+                segment = segment.replace(
+                    /\(([\s\S]*?)\)/g,
+                    (match, content) => {
+                        // Verify this isn't part of a command or other LaTeX construct
+                        if (
+                            content.includes('\n') ||
+                            /^[^{}\[\]]*$/.test(content)
+                        ) {
+                            return `\\(${content}\\)`;
+                        }
+                        return match;
+                    }
+                );
+
+                return segment;
+            })
+            .join('');
+    }
+
+    function getAdjacentTextNodes(node) {
+        const nodes = [];
+        let current = node;
+        let text = '';
+
+        // Collect preceding text nodes
+        while (current.previousSibling) {
+            if (current.previousSibling.nodeType === Node.TEXT_NODE) {
+                text = current.previousSibling.textContent + text;
+                nodes.unshift(current.previousSibling);
+            } else if (
+                current.previousSibling.nodeType === Node.ELEMENT_NODE &&
+                ['BR', 'DIV', 'P'].includes(current.previousSibling.tagName)
+            ) {
+                text = '\n' + text;
+                nodes.unshift(current.previousSibling);
+            } else {
+                break;
+            }
+            current = current.previousSibling;
+        }
+
+        // Add current node
+        text += node.textContent;
+        nodes.push(node);
+
+        // Collect following text nodes
+        current = node;
+        while (current.nextSibling) {
+            if (current.nextSibling.nodeType === Node.TEXT_NODE) {
+                text += current.nextSibling.textContent;
+                nodes.push(current.nextSibling);
+            } else if (
+                current.nextSibling.nodeType === Node.ELEMENT_NODE &&
+                ['BR', 'DIV', 'P'].includes(current.nextSibling.tagName)
+            ) {
                 text += '\n';
-                nodesToRemove.push(current);
+                nodes.push(current.nextSibling);
             } else {
                 break;
             }
             current = current.nextSibling;
         }
 
-        debugLog('Collected text:', text);
+        // Reconstruct delimiters in the combined text
+        const reconstructedText = reconstructDelimiters(text);
+
         return {
-            text: text,
-            nodes: nodesToRemove,
+            nodes: nodes,
+            text: reconstructedText,
         };
     }
 
     function findMatchingDelimiter(text, startPos) {
-        debugLog('Finding delimiter at position:', startPos);
-        debugLog('Text snippet:', text.substr(startPos, 20));
-
-        // For backslash delimiters, we need to handle the case where the backslash
-        // might be followed by a newline
-        if (text[startPos] === '\\') {
-            const restOfText = text.slice(startPos);
-            debugLog('Checking backslash delimiter in:', restOfText);
-
-            // Check for \[ ... \]
-            if (restOfText.match(/^\\\s*\[/)) {
-                const match = restOfText.match(/^\\\s*\[([\s\S]*?)\\\s*\]/);
-                if (match) {
-                    debugLog('Found display bracket match:', match[0]);
-                    return {
-                        start: startPos,
-                        end: startPos + match[0].length,
-                        delimiter: DELIMITERS.DISPLAY_BRACKETS,
-                        isBackslash: true,
-                    };
-                }
-            }
-
-            // Check for \( ... \)
-            if (restOfText.match(/^\\\s*\(/)) {
-                const match = restOfText.match(/^\\\s*\(([\s\S]*?)\\\s*\)/);
-                if (match) {
-                    debugLog('Found inline paren match:', match[0]);
-                    return {
-                        start: startPos,
-                        end: startPos + match[0].length,
-                        delimiter: DELIMITERS.INLINE_PARENS,
-                        isBackslash: true,
-                    };
-                }
-            }
-        }
-
-        // Handle dollar delimiters
+        // Handle display dollars
         if (text.startsWith('$$', startPos)) {
             const endPos = text.indexOf('$$', startPos + 2);
             if (endPos !== -1) {
-                debugLog('Found display dollar match');
                 return {
                     start: startPos,
                     end: endPos + 2,
                     delimiter: DELIMITERS.DISPLAY_DOLLARS,
-                    isBackslash: false,
                 };
             }
         }
 
+        // Handle inline dollars
         if (text[startPos] === '$') {
             let pos = startPos + 1;
             while (pos < text.length) {
                 if (text[pos] === '$' && text[pos - 1] !== '\\') {
-                    debugLog('Found inline dollar match');
                     return {
                         start: startPos,
                         end: pos + 1,
                         delimiter: DELIMITERS.INLINE_DOLLARS,
-                        isBackslash: false,
                     };
                 }
                 pos++;
+            }
+        }
+
+        // Handle display brackets
+        if (text.startsWith('\\[', startPos)) {
+            const endPos = text.indexOf('\\]', startPos + 2);
+            if (endPos !== -1) {
+                return {
+                    start: startPos,
+                    end: endPos + 2,
+                    delimiter: DELIMITERS.DISPLAY_BRACKETS,
+                };
+            }
+        }
+
+        // Handle inline parentheses
+        if (text.startsWith('\\(', startPos)) {
+            const endPos = text.indexOf('\\)', startPos + 2);
+            if (endPos !== -1) {
+                return {
+                    start: startPos,
+                    end: endPos + 2,
+                    delimiter: DELIMITERS.INLINE_PARENS,
+                };
             }
         }
 
@@ -191,24 +270,21 @@
     }
 
     function findMathDelimiters(text) {
-        debugLog('Finding math delimiters in text');
         const segments = [];
         let pos = 0;
         let lastPos = 0;
-
-        text = text.replace(/\r\n/g, '\n'); // Normalize newlines
-        debugLog('Normalized text:', text);
 
         while (pos < text.length) {
             let found = false;
 
             if (
-                (text[pos] === '$' || text[pos] === '\\') &&
+                (text[pos] === '$' ||
+                    text.startsWith('\\[', pos) ||
+                    text.startsWith('\\(', pos)) &&
                 !(pos > 0 && text[pos - 1] === '\\')
             ) {
                 const match = findMatchingDelimiter(text, pos);
                 if (match) {
-                    debugLog('Found match:', match);
                     if (pos > lastPos) {
                         segments.push(text.slice(lastPos, pos));
                     }
@@ -217,7 +293,6 @@
                         type: 'math',
                         content: text.slice(match.start, match.end),
                         display: match.delimiter.display,
-                        isBackslash: match.isBackslash,
                     });
 
                     lastPos = match.end;
@@ -235,59 +310,42 @@
             segments.push(text.slice(lastPos));
         }
 
-        debugLog('Found segments:', segments);
         return segments;
     }
-    function processMathExpression(match, isDisplay) {
-        debugLog('Processing math expression:', match);
+
+    function processMathExpression(match) {
         const container = document.createElement('span');
         container.className = 'math-container math-processed';
-        if (isDisplay) {
+        if (match.display) {
             container.setAttribute('data-display', 'block');
         }
 
         let latex;
-        if (match.isBackslash) {
-            // Handle backslash delimiters
-            if (
-                match.content.startsWith('\\[') &&
-                match.content.endsWith('\\]')
-            ) {
-                latex = match.content.slice(2, -2).trim();
-            } else if (
-                match.content.startsWith('\\(') &&
-                match.content.endsWith('\\)')
-            ) {
-                latex = match.content.slice(2, -2).trim();
-            }
-            debugLog('Extracted LaTeX from backslash:', latex);
-        } else {
-            // Handle dollar delimiters
-            if (
-                match.content.startsWith('$$') &&
-                match.content.endsWith('$$')
-            ) {
-                latex = match.content.slice(2, -2).trim();
-            } else if (
-                match.content.startsWith('$') &&
-                match.content.endsWith('$')
-            ) {
-                latex = match.content.slice(1, -1).trim();
-            }
-            debugLog('Extracted LaTeX from dollars:', latex);
+        if (match.content.startsWith('$$') && match.content.endsWith('$$')) {
+            latex = match.content.slice(2, -2);
+        } else if (
+            match.content.startsWith('$') &&
+            match.content.endsWith('$')
+        ) {
+            latex = match.content.slice(1, -1);
+        } else if (
+            match.content.startsWith('\\[') &&
+            match.content.endsWith('\\]')
+        ) {
+            latex = match.content.slice(2, -2);
+        } else if (
+            match.content.startsWith('\\(') &&
+            match.content.endsWith('\\)')
+        ) {
+            latex = match.content.slice(2, -2);
         }
 
         if (!latex) {
-            debugLog('No LaTeX content extracted');
             container.textContent = match.content;
             return container;
         }
 
-        // Clean up any newlines in the LaTeX content
-        latex = latex.replace(/\s*\n\s*/g, ' ').trim();
-        debugLog('Cleaned LaTeX:', latex);
-
-        const mathML = convertToMathML(latex, isDisplay);
+        const mathML = convertToMathML(latex.trim(), match.display);
         if (mathML) {
             container.innerHTML = mathML;
         } else {
@@ -302,35 +360,21 @@
             return;
         }
 
-        debugLog('Processing node:', node.textContent);
-        const { text, nodes } = getAdjacentTextNodes(node);
+        const { nodes, text } = getAdjacentTextNodes(node);
 
-        // Check for delimiters in the complete text
+        // Check for any math delimiters
         let hasDelimiter = false;
         for (const del of Object.values(DELIMITERS)) {
-            // For backslash delimiters, check for both parts
-            if (del.start.startsWith('\\')) {
-                const startChar = del.start.charAt(1);
-                const endChar = del.end.charAt(1);
-                if (text.includes(startChar) && text.includes(endChar)) {
-                    hasDelimiter = true;
-                    break;
-                }
-            } else if (text.includes(del.start)) {
+            if (text.includes(del.start)) {
                 hasDelimiter = true;
                 break;
             }
         }
 
-        if (!hasDelimiter) {
-            debugLog('No delimiters found');
-            return;
-        }
+        if (!hasDelimiter) return;
 
-        // Process the complete text
         const segments = findMathDelimiters(text);
         if (segments.length === 1 && typeof segments[0] === 'string') {
-            debugLog('Only one text segment found, no processing needed');
             return;
         }
 
@@ -340,34 +384,24 @@
         segments.forEach(segment => {
             if (typeof segment === 'string') {
                 if (segment) {
-                    const textNode = document.createTextNode(segment);
-                    wrapper.appendChild(textNode);
+                    wrapper.appendChild(document.createTextNode(segment));
                 }
             } else if (segment.type === 'math') {
-                const mathElement = processMathExpression(
-                    segment,
-                    segment.display
-                );
+                const mathElement = processMathExpression(segment);
                 if (mathElement) {
                     wrapper.appendChild(mathElement);
                 }
             }
         });
 
-        // Replace all collected nodes with the wrapper
         const parent = node.parentNode;
         if (parent) {
-            const firstNode = nodes[0];
             nodes.forEach(n => {
                 if (n.parentNode) {
                     n.parentNode.removeChild(n);
                 }
             });
-            if (firstNode && firstNode.parentNode) {
-                parent.insertBefore(wrapper, firstNode);
-            } else {
-                parent.appendChild(wrapper);
-            }
+            parent.insertBefore(wrapper, nodes[0]);
         }
     }
 
@@ -386,6 +420,7 @@
 
         requestIdleCallback(processNextBatch);
     }
+
     function findTextNodes() {
         const walker = document.createTreeWalker(
             document.body,
@@ -408,153 +443,47 @@
         while ((node = walker.nextNode())) {
             nodes.push(node);
         }
-        debugLog('Found text nodes:', nodes.length);
         return nodes;
     }
 
     function processMath() {
-        debugLog('Processing math expressions');
         const nodes = findTextNodes();
         if (nodes.length > 0) {
             processNodes(nodes);
         }
     }
 
-    // Enhanced initialization with better error handling and debugging
     async function initialize() {
         try {
-            debugLog('Initializing LaTeX converter...');
             await loadTeXZilla();
             injectStyles();
-
-            // Initial processing
             processMath();
 
-            // Enhanced mutation observer with better handling of dynamic content
             const observer = new MutationObserver(mutations => {
                 let shouldProcess = false;
-                let newNodes = [];
-
-                mutations.forEach(mutation => {
-                    mutation.addedNodes.forEach(node => {
-                        if (node.nodeType === Node.ELEMENT_NODE) {
-                            // Check if the node or its parents are already processed
-                            if (!node.closest('.math-processed')) {
-                                shouldProcess = true;
-                                newNodes.push(node);
-                            }
-                        } else if (node.nodeType === Node.TEXT_NODE) {
-                            // For text nodes, check parent
-                            if (
-                                !node.parentElement?.closest('.math-processed')
-                            ) {
-                                shouldProcess = true;
-                                newNodes.push(node);
-                            }
-                        }
-                    });
-                });
-
+                for (const mutation of mutations) {
+                    if (mutation.addedNodes.length > 0) {
+                        shouldProcess = true;
+                        break;
+                    }
+                }
                 if (shouldProcess) {
-                    debugLog(`Processing ${newNodes.length} new nodes`);
-                    requestIdleCallback(() => {
-                        newNodes.forEach(node => {
-                            if (node.nodeType === Node.ELEMENT_NODE) {
-                                const textNodes = [];
-                                const walker = document.createTreeWalker(
-                                    node,
-                                    NodeFilter.SHOW_TEXT,
-                                    {
-                                        acceptNode: textNode => {
-                                            if (
-                                                !isInCodeBlock(textNode) &&
-                                                !textNode.parentElement?.closest(
-                                                    '.math-processed'
-                                                )
-                                            ) {
-                                                return NodeFilter.FILTER_ACCEPT;
-                                            }
-                                            return NodeFilter.FILTER_REJECT;
-                                        },
-                                    }
-                                );
-
-                                let textNode;
-                                while ((textNode = walker.nextNode())) {
-                                    textNodes.push(textNode);
-                                }
-
-                                if (textNodes.length > 0) {
-                                    processNodes(textNodes);
-                                }
-                            } else if (node.nodeType === Node.TEXT_NODE) {
-                                processNode(node);
-                            }
-                        });
-                    });
+                    requestIdleCallback(processMath);
                 }
             });
 
             observer.observe(document.body, {
                 childList: true,
                 subtree: true,
-                characterData: true,
             });
-
-            debugLog('Initialization complete');
         } catch (error) {
             console.error('Error initializing LaTeX converter:', error);
-            debugLog('Initialization error:', error);
         }
     }
 
-    // Start the extension with proper timing
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initialize);
     } else {
         initialize();
-    }
-
-    // Expose debug toggle and reprocess function
-    if (typeof window !== 'undefined') {
-        window.toggleLaTeXDebug = function (enable = true) {
-            window.DEBUG_LATEX = enable;
-            debugLog('Debug mode ' + (enable ? 'enabled' : 'disabled'));
-        };
-
-        window.reprocessLaTeX = function () {
-            debugLog('Manually triggering LaTeX processing');
-            processMath();
-        };
-
-        // Add a function to process specific content
-        window.processLaTeXContent = function (element) {
-            debugLog('Processing specific element:', element);
-            const textNodes = [];
-            const walker = document.createTreeWalker(
-                element,
-                NodeFilter.SHOW_TEXT,
-                {
-                    acceptNode: textNode => {
-                        if (
-                            !isInCodeBlock(textNode) &&
-                            !textNode.parentElement?.closest('.math-processed')
-                        ) {
-                            return NodeFilter.FILTER_ACCEPT;
-                        }
-                        return NodeFilter.FILTER_REJECT;
-                    },
-                }
-            );
-
-            let textNode;
-            while ((textNode = walker.nextNode())) {
-                textNodes.push(textNode);
-            }
-
-            if (textNodes.length > 0) {
-                processNodes(textNodes);
-            }
-        };
     }
 })();
