@@ -100,29 +100,28 @@
             '@@WTILDE@@$1@@'
         );
 
-        // Handle nested fractions
-        cleaned = cleaned.replace(
-            /\\frac\{([^{}]+)\}\{([^{}]+)\}/g,
-            (match, num, den) => {
-                // Clean up the numerator and denominator
-                num = num
-                    .replace(/\(/g, '\\lparen ')
-                    .replace(/\)/g, '\\rparen ');
-                den = den
-                    .replace(/\(/g, '\\lparen ')
-                    .replace(/\)/g, '\\rparen ');
-                return `\\frac{${num}}{${den}}`;
-            }
-        );
-
-        // Handle \left and \right pairs
+        // Handle \left and \right pairs - keep them intact but normalize spacing
         cleaned = cleaned
-            .replace(/\\left\s*\(/g, '\\lparen ')
-            .replace(/\\right\s*\)/g, '\\rparen ')
-            .replace(/\\left\s*\[/g, '\\lbrack ')
-            .replace(/\\right\s*\]/g, '\\rbrack ')
-            .replace(/\\left\s*\{/g, '\\lbrace ')
-            .replace(/\\right\s*\}/g, '\\rbrace ');
+            .replace(/\\left\s*(\(|\[|\{)/g, '\\left$1')
+            .replace(/\\right\s*(\)|\]|\})/g, '\\right$1');
+
+        // Handle nested fractions with parentheses
+        const processFraction = (match, num, den) => {
+            // Process numerator and denominator separately
+            num = num.replace(/\(([^)]+)\)/g, '\\lparen $1\\rparen ');
+            den = den.replace(/\(([^)]+)\)/g, '\\lparen $1\\rparen ');
+            return `\\frac{${num}}{${den}}`;
+        };
+
+        // Apply fraction processing repeatedly for nested fractions
+        let prevCleaned;
+        do {
+            prevCleaned = cleaned;
+            cleaned = cleaned.replace(
+                /\\frac\{([^{}]+)\}\{([^{}]+)\}/g,
+                processFraction
+            );
+        } while (cleaned !== prevCleaned);
 
         // Restore protected commands
         cleaned = cleaned.replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
@@ -136,9 +135,16 @@
             const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
             return new XMLSerializer().serializeToString(mathML);
         } catch (e) {
-            return null;
+            // If first attempt fails, try with original latex
+            try {
+                const mathML = TeXZilla.toMathML(latex, isDisplay);
+                return new XMLSerializer().serializeToString(mathML);
+            } catch (e) {
+                return null;
+            }
         }
     }
+
     function getAdjacentTextNodes(node) {
         const nodes = [];
         let current = node;
