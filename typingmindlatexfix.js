@@ -100,16 +100,14 @@
             '@@WTILDE@@$1@@'
         );
 
-        // Handle \left and \right pairs - keep them intact but normalize spacing
+        // Protect \left and \right pairs
         cleaned = cleaned
-            .replace(/\\left\s*(\(|\[|\{)/g, '\\left$1')
-            .replace(/\\right\s*(\)|\]|\})/g, '\\right$1');
+            .replace(/\\left\s*(\(|\[|\{)/g, '@@LEFT@@$1')
+            .replace(/\\right\s*(\)|\]|\})/g, '@@RIGHT@@$1');
 
         // Handle nested fractions with parentheses
         const processFraction = (match, num, den) => {
-            // Process numerator and denominator separately
-            num = num.replace(/\(([^)]+)\)/g, '\\lparen $1\\rparen ');
-            den = den.replace(/\(([^)]+)\)/g, '\\lparen $1\\rparen ');
+            // Process numerator and denominator separately, but don't modify protected tokens
             return `\\frac{${num}}{${den}}`;
         };
 
@@ -123,6 +121,11 @@
             );
         } while (cleaned !== prevCleaned);
 
+        // Restore \left and \right
+        cleaned = cleaned
+            .replace(/@@LEFT@@/g, '\\left ')
+            .replace(/@@RIGHT@@/g, '\\right ');
+
         // Restore protected commands
         cleaned = cleaned.replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
 
@@ -135,9 +138,12 @@
             const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
             return new XMLSerializer().serializeToString(mathML);
         } catch (e) {
-            // If first attempt fails, try with original latex
             try {
-                const mathML = TeXZilla.toMathML(latex, isDisplay);
+                // If cleaning fails, try with minimal cleaning
+                const minimalClean = latex
+                    .replace(/\\widetilde\{([^}]+)\}/g, '@@WTILDE@@$1@@')
+                    .replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
+                const mathML = TeXZilla.toMathML(minimalClean, isDisplay);
                 return new XMLSerializer().serializeToString(mathML);
             } catch (e) {
                 return null;
