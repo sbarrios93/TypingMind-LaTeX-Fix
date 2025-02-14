@@ -18,22 +18,38 @@
     }
 
     function cleanLatex(latex) {
-        // Replace problematic LaTeX constructs with their equivalents
-        return (
-            latex
-                .replace(/\\left\(/g, '\\lparen ')
-                .replace(/\\right\)/g, '\\rparen ')
-                .replace(/\\left\[/g, '\\lbrack ')
-                .replace(/\\right\]/g, '\\rbrack ')
-                .replace(/\\left\{/g, '\\lbrace ')
-                .replace(/\\right\}/g, '\\rbrace ')
-                // Fix common typos
-                .replace(/\\delta([^a-zA-Z])/g, '\\delta$1') // Fix cases where \ is missing
-                .replace(/([^\\])delta/g, '$1\\delta') // Add \ to delta when missing
-                .replace(/([^\\])pi/g, '$1\\pi') // Add \ to pi when missing
-                .replace(/\s*\n\s*/g, ' ') // Normalize whitespace
-                .trim()
-        );
+        debugLog('Cleaning LaTeX:', latex);
+
+        // First, protect certain commands
+        let cleaned = latex
+            // Protect \widetilde and similar commands
+            .replace(
+                /(\\widetilde|\\tilde|\\hat|\\bar)\{([^}]+)\}/g,
+                '@@$1@@$2@@'
+            )
+            // Handle \left and \right
+            .replace(/\\left\s*\(/g, '\\lparen ')
+            .replace(/\\right\s*\)/g, '\\rparen ')
+            .replace(/\\left\s*\[/g, '\\lbrack ')
+            .replace(/\\right\s*\]/g, '\\rbrack ')
+            .replace(/\\left\s*\{/g, '\\lbrace ')
+            .replace(/\\right\s*\}/g, '\\rbrace ')
+            // Fix common issues
+            .replace(/([^\\])delta/g, '$1\\delta')
+            .replace(/([^\\])pi/g, '$1\\pi')
+            // Normalize whitespace
+            .replace(/\s*\n\s*/g, ' ')
+            .trim();
+
+        // Restore protected commands
+        cleaned = cleaned
+            .replace(/@@\\widetilde@@([^@]+)@@/g, '\\widetilde{$1}')
+            .replace(/@@\\tilde@@([^@]+)@@/g, '\\tilde{$1}')
+            .replace(/@@\\hat@@([^@]+)@@/g, '\\hat{$1}')
+            .replace(/@@\\bar@@([^@]+)@@/g, '\\bar{$1}');
+
+        debugLog('Cleaned LaTeX:', cleaned);
+        return cleaned;
     }
 
     async function loadTeXZilla() {
@@ -95,16 +111,31 @@
         try {
             // Clean up the LaTeX before conversion
             const cleanedLatex = cleanLatex(latex);
-            debugLog('Cleaned LaTeX:', cleanedLatex);
 
-            const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
-            return new XMLSerializer().serializeToString(mathML);
+            // Try conversion with cleaned LaTeX
+            try {
+                const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
+                return new XMLSerializer().serializeToString(mathML);
+            } catch (e) {
+                debugLog('First conversion attempt failed:', e);
+
+                // Try alternative cleanup if first attempt fails
+                const alternativeLatex = cleanedLatex
+                    .replace(/\\lparen/g, '(')
+                    .replace(/\\rparen/g, ')')
+                    .replace(/\\lbrack/g, '[')
+                    .replace(/\\rbrack/g, ']');
+
+                const mathML = TeXZilla.toMathML(alternativeLatex, isDisplay);
+                return new XMLSerializer().serializeToString(mathML);
+            }
         } catch (e) {
             console.error('TeXZilla conversion error:', e);
             debugLog('Failed LaTeX:', latex);
             return null;
         }
     }
+
     function isLikelyLatex(content) {
         // Check for common LaTeX constructs and mathematical symbols
         const latexPatterns = [
@@ -400,27 +431,12 @@
             return container;
         }
 
-        // Enhanced LaTeX cleanup
-        latex = latex
-            .replace(/\\left\(/g, '(')
-            .replace(/\\right\)/g, ')')
-            .replace(/\\left\[/g, '[')
-            .replace(/\\right\]/g, ']')
-            .replace(/\\left\{/g, '\\{')
-            .replace(/\\right\}/g, '\\}')
-            .replace(/([^\\])delta/g, '$1\\delta')
-            .replace(/([^\\])pi/g, '$1\\pi')
-            .replace(/\s*\n\s*/g, ' ')
-            .trim();
-
-        debugLog('Cleaned LaTeX:', latex);
-
         try {
             const mathML = convertToMathML(latex, match.display);
             if (mathML) {
                 container.innerHTML = mathML;
             } else {
-                // Fallback: show original LaTeX
+                // If conversion fails, try to display original LaTeX
                 container.textContent = match.content;
             }
         } catch (e) {
