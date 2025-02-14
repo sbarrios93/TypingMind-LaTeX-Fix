@@ -339,6 +339,7 @@
 
         return segments;
     }
+
     function processMathExpression(match) {
         const container = document.createElement('span');
         container.className = 'math-container math-processed';
@@ -346,50 +347,13 @@
             container.setAttribute('data-display', 'block');
         }
 
-        let latex;
-        if (match.content.startsWith('$$') && match.content.endsWith('$$')) {
-            latex = match.content.slice(2, -2).trim();
-        } else if (
-            match.content.startsWith('$') &&
-            match.content.endsWith('$')
-        ) {
-            latex = match.content.slice(1, -1).trim();
-        } else if (
-            match.content.startsWith('[') &&
-            match.content.endsWith(']')
-        ) {
-            latex = match.content.slice(1, -1).trim();
-        } else if (
-            match.content.startsWith('(') &&
-            match.content.endsWith(')')
-        ) {
-            latex = match.content.slice(1, -1).trim();
-        } else if (
-            match.content.startsWith('\\[') &&
-            match.content.endsWith('\\]')
-        ) {
-            latex = match.content.slice(2, -2).trim();
-        } else if (
-            match.content.startsWith('\\(') &&
-            match.content.endsWith('\\)')
-        ) {
-            latex = match.content.slice(2, -2).trim();
-        }
-
-        if (!latex) {
-            container.textContent = match.content;
-            return container;
-        }
-
         try {
-            const isDisplay =
-                match.content.startsWith('$$') ||
-                match.content.startsWith('\\[') ||
-                match.content.startsWith('[');
-
-            const mathML = convertToMathML(latex, isDisplay);
+            // Don't extract the content - pass the entire expression to TeXZilla
+            const mathML = TeXZilla.toMathML(match.content, match.display);
             if (mathML) {
-                container.innerHTML = mathML;
+                container.innerHTML = new XMLSerializer().serializeToString(
+                    mathML
+                );
             } else {
                 container.textContent = match.content;
             }
