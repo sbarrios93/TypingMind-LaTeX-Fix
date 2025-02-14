@@ -281,6 +281,134 @@
         debugLog('Found segments:', segments);
         return segments;
     }
+    function processMathExpression(match, isDisplay) {
+        debugLog('Processing math expression:', match);
+        const container = document.createElement('span');
+        container.className = 'math-container math-processed';
+        if (isDisplay) {
+            container.setAttribute('data-display', 'block');
+        }
+
+        let latex;
+        if (match.isBackslash) {
+            // Handle backslash delimiters
+            for (const del of [
+                DELIMITERS.DISPLAY_BRACKETS,
+                DELIMITERS.INLINE_PARENS,
+            ]) {
+                if (
+                    match.content.startsWith(del.start) &&
+                    match.content.endsWith(del.end)
+                ) {
+                    latex = match.content
+                        .slice(del.start.length, -del.end.length)
+                        .trim();
+                    debugLog('Extracted LaTeX from backslash:', latex);
+                    break;
+                }
+            }
+        } else {
+            // Handle dollar delimiters
+            for (const del of [
+                DELIMITERS.DISPLAY_DOLLARS,
+                DELIMITERS.INLINE_DOLLARS,
+            ]) {
+                if (
+                    match.content.startsWith(del.start) &&
+                    match.content.endsWith(del.end)
+                ) {
+                    latex = match.content
+                        .slice(del.start.length, -del.end.length)
+                        .trim();
+                    debugLog('Extracted LaTeX from dollars:', latex);
+                    break;
+                }
+            }
+        }
+
+        if (!latex) {
+            debugLog('No LaTeX content extracted');
+            container.textContent = match.content;
+            return container;
+        }
+
+        const mathML = convertToMathML(latex, isDisplay);
+        if (mathML) {
+            container.innerHTML = mathML;
+        } else {
+            container.textContent = match.content;
+        }
+
+        return container;
+    }
+
+    function processNode(node) {
+        if (!node || node.nodeType !== Node.TEXT_NODE || isInCodeBlock(node)) {
+            return;
+        }
+
+        debugLog('Processing node:', node.textContent);
+        const { nodes, combinedText } = getAdjacentTextNodes(node);
+
+        // Check for any math delimiters
+        let hasDelimiter = false;
+        for (const del of Object.values(DELIMITERS)) {
+            if (combinedText.includes(del.start)) {
+                hasDelimiter = true;
+                break;
+            }
+        }
+
+        if (!hasDelimiter) {
+            debugLog('No delimiters found in text');
+            return;
+        }
+
+        const segments = findMathDelimiters(combinedText);
+        if (segments.length === 1 && typeof segments[0] === 'string') {
+            debugLog('Only one text segment found, no processing needed');
+            return;
+        }
+
+        const wrapper = document.createElement('span');
+        wrapper.className = 'math-processed-wrapper';
+
+        segments.forEach(segment => {
+            if (typeof segment === 'string') {
+                if (segment) {
+                    wrapper.appendChild(document.createTextNode(segment));
+                }
+            } else if (segment.type === 'math') {
+                const mathElement = processMathExpression(
+                    segment,
+                    segment.display
+                );
+                if (mathElement) {
+                    wrapper.appendChild(mathElement);
+                }
+            }
+        });
+
+        // Replace the original nodes with the processed content
+        const parent = node.parentNode;
+        if (parent) {
+            nodes.forEach(n => {
+                if (n.type === 'newline' && n.node.parentNode) {
+                    n.node.parentNode.removeChild(n.node);
+                } else if (n.type === 'text' && n.node && n.node.parentNode) {
+                    n.node.parentNode.removeChild(n.node);
+                }
+            });
+
+            const firstNode = nodes[0].node;
+            if (firstNode && firstNode.parentNode) {
+                parent.insertBefore(wrapper, firstNode);
+            } else {
+                parent.appendChild(wrapper);
+            }
+        }
+    }
+
     function processNodes(nodes) {
         let index = 0;
 
@@ -296,7 +424,6 @@
 
         requestIdleCallback(processNextBatch);
     }
-
     function findTextNodes() {
         const walker = document.createTreeWalker(
             document.body,
@@ -319,57 +446,49 @@
         while ((node = walker.nextNode())) {
             nodes.push(node);
         }
+        debugLog('Found text nodes:', nodes.length);
         return nodes;
     }
 
     function processMath() {
+        debugLog('Processing math expressions');
         const nodes = findTextNodes();
         if (nodes.length > 0) {
             processNodes(nodes);
         }
     }
 
-    // Debug utility function
-    function debugLog(message, data = null) {
-        if (typeof window !== 'undefined' && window.DEBUG_LATEX) {
-            console.log(`[LaTeX Debug] ${message}`, data || '');
-        }
-    }
-
-    // Enhanced initialization with error handling
+    // Enhanced initialization with better error handling and debugging
     async function initialize() {
         try {
             debugLog('Initializing LaTeX converter...');
             await loadTeXZilla();
-            debugLog('TeXZilla loaded successfully');
-
             injectStyles();
-            debugLog('Styles injected');
 
             // Initial processing
             processMath();
-            debugLog('Initial math processing complete');
 
-            // Enhanced mutation observer for dynamic content
+            // Enhanced mutation observer with better handling of dynamic content
             const observer = new MutationObserver(mutations => {
                 let shouldProcess = false;
                 let newNodes = [];
 
                 for (const mutation of mutations) {
                     if (mutation.addedNodes.length > 0) {
-                        shouldProcess = true;
                         mutation.addedNodes.forEach(node => {
-                            if (node.nodeType === Node.ELEMENT_NODE) {
-                                // Check if the node or its parents are already processed
-                                if (!node.closest('.math-processed')) {
-                                    newNodes.push(node);
-                                }
+                            // Check if the node or its parents are already processed
+                            if (
+                                node.nodeType === Node.ELEMENT_NODE &&
+                                !node.closest('.math-processed')
+                            ) {
+                                shouldProcess = true;
+                                newNodes.push(node);
                             }
                         });
                     }
                 }
 
-                if (shouldProcess && newNodes.length > 0) {
+                if (shouldProcess) {
                     debugLog(`Processing ${newNodes.length} new nodes`);
                     requestIdleCallback(() => {
                         newNodes.forEach(node => {
@@ -412,7 +531,7 @@
                 subtree: true,
             });
 
-            debugLog('Mutation observer set up');
+            debugLog('Initialization complete');
         } catch (error) {
             console.error('Error initializing LaTeX converter:', error);
             debugLog('Initialization error:', error);
@@ -431,6 +550,12 @@
         window.toggleLaTeXDebug = function (enable = true) {
             window.DEBUG_LATEX = enable;
             debugLog('Debug mode ' + (enable ? 'enabled' : 'disabled'));
+        };
+
+        // Expose reprocess function for manual triggering
+        window.reprocessLaTeX = function () {
+            debugLog('Manually triggering LaTeX processing');
+            processMath();
         };
     }
 })();
