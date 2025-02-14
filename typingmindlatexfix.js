@@ -17,85 +17,6 @@
         console.log(`[LaTeX Debug] ${message}`, data || '');
     }
 
-    function cleanDollarLatex(latex) {
-        // Minimal cleaning for dollar-delimited expressions
-        return latex.replace(/\s*\n\s*/g, ' ').trim();
-    }
-
-    function cleanBracketLatex(latex) {
-        // More aggressive cleaning for bracket-delimited expressions
-        let cleaned = latex;
-
-        // First protect commands that shouldn't be modified
-        const protected = [];
-        cleaned = cleaned.replace(
-            /\\(?:widetilde|tilde|hat|bar|vec)\{([^}]+)\}/g,
-            match => {
-                protected.push(match);
-                return `@@PROTECTED${protected.length - 1}@@`;
-            }
-        );
-
-        // Clean up the LaTeX
-        cleaned = cleaned
-            // Handle \left and \right
-            .replace(/\\left\s*\(/g, '(')
-            .replace(/\\right\s*\)/g, ')')
-            .replace(/\\left\s*\[/g, '[')
-            .replace(/\\right\s*\]/g, ']')
-            // Fix common issues
-            .replace(/([^\\])delta/g, '$1\\delta')
-            .replace(/([^\\])pi/g, '$1\\pi')
-            // Normalize whitespace
-            .replace(/\s*\n\s*/g, ' ')
-            .trim();
-
-        // Restore protected content
-        cleaned = cleaned.replace(
-            /@@PROTECTED(\d+)@@/g,
-            (_, index) => protected[index]
-        );
-
-        return cleaned;
-    }
-
-    function convertToMathML(latex, isDisplay, type) {
-        debugLog('Converting to MathML:', { latex, isDisplay, type });
-
-        try {
-            let cleanedLatex;
-            let originalLatex = latex;
-
-            // Use different cleaning strategies based on delimiter type
-            if (type === 'dollars') {
-                cleanedLatex = cleanDollarLatex(latex);
-            } else {
-                cleanedLatex = cleanBracketLatex(latex);
-            }
-
-            debugLog('Cleaned LaTeX:', cleanedLatex);
-
-            try {
-                const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
-                return new XMLSerializer().serializeToString(mathML);
-            } catch (e) {
-                debugLog('First conversion attempt failed:', e);
-
-                // If cleaned version fails, try original
-                if (cleanedLatex !== originalLatex) {
-                    debugLog('Trying original LaTeX');
-                    const mathML = TeXZilla.toMathML(originalLatex, isDisplay);
-                    return new XMLSerializer().serializeToString(mathML);
-                }
-                throw e;
-            }
-        } catch (e) {
-            console.error('TeXZilla conversion error:', e);
-            debugLog('Failed LaTeX:', latex);
-            return null;
-        }
-    }
-
     async function loadTeXZilla() {
         if (state.teXZillaLoaded) return;
         debugLog('Loading TeXZilla...');
@@ -149,27 +70,102 @@
         }
         return false;
     }
+
+    function convertToMathML(latex, isDisplay) {
+        debugLog('Converting to MathML:', { latex, isDisplay });
+        try {
+            const mathML = TeXZilla.toMathML(latex, isDisplay);
+            return new XMLSerializer().serializeToString(mathML);
+        } catch (e) {
+            console.error('TeXZilla conversion error:', e);
+            debugLog('Failed LaTeX:', latex);
+            return null;
+        }
+    }
+    function isLikelyLatex(content) {
+        // Check for common LaTeX constructs and mathematical symbols
+        return (
+            /[_^{}\\]/.test(content) || // LaTeX control characters
+            /\\?[a-zA-Z]{2,}/.test(content) || // Possible commands
+            /\d+/.test(content) || // Numbers
+            /[∫∑∏√∞±≤≥≠]/.test(content) || // Math symbols
+            /[α-ωΑ-Ω]/.test(content) || // Greek letters
+            content.includes('\n') // Multiline content
+        );
+    }
+
+    function getAdjacentTextNodes(node) {
+        debugLog('Getting adjacent text nodes for:', node.textContent);
+        const nodes = [];
+        let current = node;
+        let text = '';
+
+        // Collect preceding text nodes
+        while (current.previousSibling) {
+            if (current.previousSibling.nodeType === Node.TEXT_NODE) {
+                text = current.previousSibling.textContent + text;
+                nodes.unshift({
+                    type: 'text',
+                    node: current.previousSibling,
+                    content: current.previousSibling.textContent,
+                });
+            } else if (
+                current.previousSibling.nodeType === Node.ELEMENT_NODE &&
+                ['BR', 'DIV', 'P'].includes(current.previousSibling.tagName)
+            ) {
+                text = '\n' + text;
+                nodes.unshift({
+                    type: 'newline',
+                    node: current.previousSibling,
+                });
+            } else {
+                break;
+            }
+            current = current.previousSibling;
+        }
+
+        // Add current node
+        text += node.textContent;
+        nodes.push({
+            type: 'text',
+            node: node,
+            content: node.textContent,
+        });
+
+        // Collect following text nodes
+        current = node;
+        while (current.nextSibling) {
+            if (current.nextSibling.nodeType === Node.TEXT_NODE) {
+                text += current.nextSibling.textContent;
+                nodes.push({
+                    type: 'text',
+                    node: current.nextSibling,
+                    content: current.nextSibling.textContent,
+                });
+            } else if (
+                current.nextSibling.nodeType === Node.ELEMENT_NODE &&
+                ['BR', 'DIV', 'P'].includes(current.nextSibling.tagName)
+            ) {
+                text += '\n';
+                nodes.push({
+                    type: 'newline',
+                    node: current.nextSibling,
+                });
+            } else {
+                break;
+            }
+            current = current.nextSibling;
+        }
+
+        debugLog('Collected text:', text);
+        return {
+            nodes: nodes,
+            text: text,
+        };
+    }
+
     function findMatchingDelimiter(text, startPos) {
         debugLog('Finding delimiter at position:', startPos);
-
-        // Helper function to find matching end delimiter
-        function findMatching(start, end, pos) {
-            let depth = 1;
-            let i = pos + start.length;
-
-            while (i < text.length) {
-                if (text.startsWith(start, i) && text[i - 1] !== '\\') {
-                    depth++;
-                } else if (text.startsWith(end, i) && text[i - 1] !== '\\') {
-                    depth--;
-                    if (depth === 0) {
-                        return i;
-                    }
-                }
-                i++;
-            }
-            return -1;
-        }
 
         // Handle display dollars
         if (text.startsWith('$$', startPos)) {
@@ -188,11 +184,7 @@
         if (text[startPos] === '$' && !text.startsWith('$$', startPos)) {
             let pos = startPos + 1;
             while (pos < text.length) {
-                if (
-                    text[pos] === '$' &&
-                    text[pos - 1] !== '\\' &&
-                    !text.startsWith('$$', pos - 1)
-                ) {
+                if (text[pos] === '$' && text[pos - 1] !== '\\') {
                     return {
                         start: startPos,
                         end: pos + 1,
@@ -204,29 +196,35 @@
             }
         }
 
-        // Handle display brackets
-        if (text.startsWith('\\[', startPos)) {
-            const endPos = findMatching('\\[', '\\]', startPos);
+        // Handle unescaped square brackets that should be LaTeX
+        if (text[startPos] === '[') {
+            const endPos = text.indexOf(']', startPos + 1);
             if (endPos !== -1) {
-                return {
-                    start: startPos,
-                    end: endPos + 2,
-                    delimiter: DELIMITERS.DISPLAY_BRACKETS,
-                    type: 'brackets',
-                };
+                const content = text.slice(startPos + 1, endPos);
+                if (isLikelyLatex(content)) {
+                    return {
+                        start: startPos,
+                        end: endPos + 1,
+                        delimiter: DELIMITERS.DISPLAY_BRACKETS,
+                        type: 'brackets',
+                    };
+                }
             }
         }
 
-        // Handle inline parentheses
-        if (text.startsWith('\\(', startPos)) {
-            const endPos = findMatching('\\(', '\\)', startPos);
+        // Handle unescaped parentheses that should be LaTeX
+        if (text[startPos] === '(') {
+            const endPos = text.indexOf(')', startPos + 1);
             if (endPos !== -1) {
-                return {
-                    start: startPos,
-                    end: endPos + 2,
-                    delimiter: DELIMITERS.INLINE_PARENS,
-                    type: 'brackets',
-                };
+                const content = text.slice(startPos + 1, endPos);
+                if (isLikelyLatex(content)) {
+                    return {
+                        start: startPos,
+                        end: endPos + 1,
+                        delimiter: DELIMITERS.INLINE_PARENS,
+                        type: 'brackets',
+                    };
+                }
             }
         }
 
@@ -242,9 +240,10 @@
         while (pos < text.length) {
             let found = false;
 
-            // Check for delimiters
             if (
                 (text[pos] === '$' ||
+                    text[pos] === '[' ||
+                    text[pos] === '(' ||
                     text.startsWith('\\[', pos) ||
                     text.startsWith('\\(', pos)) &&
                 !(pos > 0 && text[pos - 1] === '\\')
@@ -281,7 +280,6 @@
         debugLog('Found segments:', segments);
         return segments;
     }
-
     function processMathExpression(match) {
         debugLog('Processing math expression:', match);
         const container = document.createElement('span');
@@ -292,22 +290,26 @@
 
         let latex;
         if (match.content.startsWith('$$') && match.content.endsWith('$$')) {
-            latex = match.content.slice(2, -2);
+            latex = match.content.slice(2, -2).trim();
         } else if (
             match.content.startsWith('$') &&
             match.content.endsWith('$')
         ) {
-            latex = match.content.slice(1, -1);
+            latex = match.content.slice(1, -1).trim();
         } else if (
-            match.content.startsWith('\\[') &&
-            match.content.endsWith('\\]')
+            match.content.startsWith('[') &&
+            match.content.endsWith(']')
         ) {
-            latex = match.content.slice(2, -2);
+            // Add backslashes for square brackets
+            latex = '\\[' + match.content.slice(1, -1).trim() + '\\]';
         } else if (
-            match.content.startsWith('\\(') &&
-            match.content.endsWith('\\)')
+            match.content.startsWith('(') &&
+            match.content.endsWith(')')
         ) {
-            latex = match.content.slice(2, -2);
+            // Add backslashes for parentheses
+            latex = '\\(' + match.content.slice(1, -1).trim() + '\\)';
+        } else {
+            latex = match.content.slice(2, -2).trim();
         }
 
         if (!latex) {
@@ -317,15 +319,18 @@
         }
 
         try {
-            const mathML = convertToMathML(
-                latex,
-                match.display,
-                match.delimiterType
-            );
+            // Handle \left and \right in the latex content
+            latex = latex
+                .replace(/\\left\s*\(/g, '\\lparen ')
+                .replace(/\\right\s*\)/g, '\\rparen ')
+                .replace(/\\left\s*\[/g, '\\lbrack ')
+                .replace(/\\right\s*\]/g, '\\rbrack ');
+
+            debugLog('Processed LaTeX:', latex);
+            const mathML = convertToMathML(latex, match.display);
             if (mathML) {
                 container.innerHTML = mathML;
             } else {
-                // Fallback: show original content
                 container.textContent = match.content;
             }
         } catch (e) {
@@ -334,68 +339,6 @@
         }
 
         return container;
-    }
-    function getAdjacentTextNodes(node) {
-        debugLog('Getting adjacent text nodes for:', node.textContent);
-        const nodes = [];
-        let current = node;
-        let text = '';
-
-        // Function to safely add a node
-        function addNode(n, type = 'text') {
-            if (n) {
-                const content = type === 'text' ? n.textContent : '\n';
-                nodes.push({
-                    type: type,
-                    node: n,
-                    content: content,
-                });
-                text += content;
-            }
-        }
-
-        // Collect preceding text nodes
-        while (current.previousSibling) {
-            if (current.previousSibling.nodeType === Node.TEXT_NODE) {
-                addNode(current.previousSibling);
-            } else if (
-                current.previousSibling.nodeType === Node.ELEMENT_NODE &&
-                ['BR', 'DIV', 'P'].includes(current.previousSibling.tagName)
-            ) {
-                addNode(current.previousSibling, 'newline');
-            } else {
-                break;
-            }
-            current = current.previousSibling;
-        }
-
-        // Reverse the collected nodes to maintain correct order
-        nodes.reverse();
-
-        // Add current node
-        addNode(node);
-
-        // Collect following text nodes
-        current = node;
-        while (current.nextSibling) {
-            if (current.nextSibling.nodeType === Node.TEXT_NODE) {
-                addNode(current.nextSibling);
-            } else if (
-                current.nextSibling.nodeType === Node.ELEMENT_NODE &&
-                ['BR', 'DIV', 'P'].includes(current.nextSibling.tagName)
-            ) {
-                addNode(current.nextSibling, 'newline');
-            } else {
-                break;
-            }
-            current = current.nextSibling;
-        }
-
-        debugLog('Collected text:', text);
-        return {
-            nodes: nodes,
-            text: text,
-        };
     }
 
     function processNode(node) {
@@ -408,11 +351,14 @@
 
         // Check for any math delimiters
         let hasDelimiter = false;
-        for (const del of Object.values(DELIMITERS)) {
-            if (text.includes(del.start)) {
-                hasDelimiter = true;
-                break;
-            }
+        if (
+            text.includes('$') ||
+            text.includes('[') ||
+            text.includes('(') ||
+            text.includes('\\[') ||
+            text.includes('\\(')
+        ) {
+            hasDelimiter = true;
         }
 
         if (!hasDelimiter) {
