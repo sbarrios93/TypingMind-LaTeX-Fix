@@ -17,6 +17,24 @@
         console.log(`[LaTeX Debug] ${message}`, data || '');
     }
 
+    function isLikelyLatex(content) {
+        // First check if it's just numbers
+        if (/^\s*\d+\s*$/.test(content)) {
+            return false;
+        }
+
+        // Then check for LaTeX content
+        return (
+            /[_^{}\\]/.test(content) || // LaTeX control characters
+            /\\?[a-zA-Z]{2,}/.test(content) || // Possible commands
+            /[∫∑∏√∞±≤≥≠]/.test(content) || // Math symbols
+            /[α-ωΑ-Ω]/.test(content) || // Greek letters
+            /\frac/.test(content) || // Common LaTeX commands
+            /\int/.test(content) || // Integrals
+            content.includes('\n') // Multiline content
+        );
+    }
+
     async function loadTeXZilla() {
         if (state.teXZillaLoaded) return;
         debugLog('Loading TeXZilla...');
@@ -82,18 +100,6 @@
             return null;
         }
     }
-    function isLikelyLatex(content) {
-        // Check for common LaTeX constructs and mathematical symbols
-        return (
-            /[_^{}\\]/.test(content) || // LaTeX control characters
-            /\\?[a-zA-Z]{2,}/.test(content) || // Possible commands
-            /\d+/.test(content) || // Numbers
-            /[∫∑∏√∞±≤≥≠]/.test(content) || // Math symbols
-            /[α-ωΑ-Ω]/.test(content) || // Greek letters
-            content.includes('\n') // Multiline content
-        );
-    }
-
     function getAdjacentTextNodes(node) {
         debugLog('Getting adjacent text nodes for:', node.textContent);
         const nodes = [];
@@ -228,6 +234,31 @@
             }
         }
 
+        // Handle already escaped delimiters
+        if (text.startsWith('\\[', startPos)) {
+            const endPos = text.indexOf('\\]', startPos + 2);
+            if (endPos !== -1) {
+                return {
+                    start: startPos,
+                    end: endPos + 2,
+                    delimiter: DELIMITERS.DISPLAY_BRACKETS,
+                    type: 'escaped',
+                };
+            }
+        }
+
+        if (text.startsWith('\\(', startPos)) {
+            const endPos = text.indexOf('\\)', startPos + 2);
+            if (endPos !== -1) {
+                return {
+                    start: startPos,
+                    end: endPos + 2,
+                    delimiter: DELIMITERS.INLINE_PARENS,
+                    type: 'escaped',
+                };
+            }
+        }
+
         return null;
     }
 
@@ -301,13 +332,13 @@
             match.content.startsWith('[') &&
             match.content.endsWith(']')
         ) {
-            // Just get the inner content for square brackets
+            // For unescaped brackets that we identified as LaTeX, add the escapes
             latex = match.content.slice(1, -1).trim();
         } else if (
             match.content.startsWith('(') &&
             match.content.endsWith(')')
         ) {
-            // Just get the inner content for parentheses
+            // For unescaped parentheses that we identified as LaTeX, add the escapes
             latex = match.content.slice(1, -1).trim();
         } else if (
             match.content.startsWith('\\[') &&
@@ -328,15 +359,7 @@
         }
 
         try {
-            // Handle \left and \right in the latex content
-            latex = latex
-                .replace(/\\left\s*\(/g, '\\lparen ')
-                .replace(/\\right\s*\)/g, '\\rparen ')
-                .replace(/\\left\s*\[/g, '\\lbrack ')
-                .replace(/\\right\s*\]/g, '\\rbrack ');
-
             debugLog('Processing LaTeX:', latex);
-            // Pass the display parameter based on the delimiter type
             const isDisplay =
                 match.content.startsWith('$$') ||
                 match.content.startsWith('\\[') ||
@@ -346,6 +369,7 @@
             if (mathML) {
                 container.innerHTML = mathML;
             } else {
+                // Fallback: show original content
                 container.textContent = match.content;
             }
         } catch (e) {
@@ -355,6 +379,7 @@
 
         return container;
     }
+
     function processNode(node) {
         if (!node || node.nodeType !== Node.TEXT_NODE || isInCodeBlock(node)) {
             return;
@@ -367,10 +392,10 @@
         let hasDelimiter = false;
         if (
             text.includes('$') ||
-            text.includes('[') ||
-            text.includes('(') ||
             text.includes('\\[') ||
-            text.includes('\\(')
+            text.includes('\\(') ||
+            /\[[^\]]*[_^{}\\]/.test(text) || // Square brackets with LaTeX content
+            /\([^)]*[_^{}\\]/.test(text) // Parentheses with LaTeX content
         ) {
             hasDelimiter = true;
         }
