@@ -94,41 +94,25 @@
     }
 
     function cleanLatex(latex) {
-        // First, protect \widetilde and similar commands
+        // Only protect \widetilde, nothing else
         let cleaned = latex.replace(
             /\\widetilde\{([^}]+)\}/g,
             '@@WTILDE@@$1@@'
         );
-
-        // Protect \left...\right pairs by temporarily replacing them
-        cleaned = cleaned.replace(
-            /(\\left\s*[\(\[\{])(.*?)(\\right\s*[\)\]\}])/g,
-            (match, left, content, right) => {
-                // Keep the \left...\right pair exactly as is, just normalize spaces
-                left = left.replace(/\s+/g, ' ');
-                right = right.replace(/\s+/g, ' ');
-                return left + content + right;
-            }
-        );
-
-        // Restore protected commands
         cleaned = cleaned.replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
-
         return cleaned;
     }
 
     function convertToMathML(latex, isDisplay) {
         try {
-            const cleanedLatex = cleanLatex(latex);
-            const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
+            // Try with minimal cleaning first
+            const mathML = TeXZilla.toMathML(latex, isDisplay);
             return new XMLSerializer().serializeToString(mathML);
         } catch (e) {
             try {
-                // If cleaning fails, try with minimal cleaning
-                const minimalClean = latex
-                    .replace(/\\widetilde\{([^}]+)\}/g, '@@WTILDE@@$1@@')
-                    .replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
-                const mathML = TeXZilla.toMathML(minimalClean, isDisplay);
+                // If that fails, try with cleaned version
+                const cleanedLatex = cleanLatex(latex);
+                const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
                 return new XMLSerializer().serializeToString(mathML);
             } catch (e) {
                 return null;
