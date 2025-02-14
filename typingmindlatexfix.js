@@ -20,13 +20,19 @@
             parent = parent.parentElement;
         }
 
-        // Check for JSON-like content
+        // Strict JSON detection
         const content = element.textContent.trim();
-        if (content.startsWith('[{') || content.startsWith('{')) {
-            const jsonCount = (content.match(/[{}\[\]",:]/g) || []).length;
-            const textLength = content.length;
-            if (jsonCount / textLength > 0.05) {
+        if (
+            (content.startsWith('[{') && content.endsWith('}]')) ||
+            (content.startsWith('{') && content.endsWith('}'))
+        ) {
+            try {
+                JSON.parse(content);
                 return true;
+            } catch (e) {
+                // Count JSON-like characters
+                const jsonChars = (content.match(/[{}\[\]",:]/g) || []).length;
+                return jsonChars / content.length > 0.1;
             }
         }
 
@@ -88,8 +94,29 @@
     }
 
     function cleanLatex(latex) {
-        // Handle nested fractions and parentheses
-        let cleaned = latex
+        // First, protect \widetilde and similar commands
+        let cleaned = latex.replace(
+            /\\widetilde\{([^}]+)\}/g,
+            '@@WTILDE@@$1@@'
+        );
+
+        // Handle nested fractions
+        cleaned = cleaned.replace(
+            /\\frac\{([^{}]+)\}\{([^{}]+)\}/g,
+            (match, num, den) => {
+                // Clean up the numerator and denominator
+                num = num
+                    .replace(/\(/g, '\\lparen ')
+                    .replace(/\)/g, '\\rparen ');
+                den = den
+                    .replace(/\(/g, '\\lparen ')
+                    .replace(/\)/g, '\\rparen ');
+                return `\\frac{${num}}{${den}}`;
+            }
+        );
+
+        // Handle \left and \right pairs
+        cleaned = cleaned
             .replace(/\\left\s*\(/g, '\\lparen ')
             .replace(/\\right\s*\)/g, '\\rparen ')
             .replace(/\\left\s*\[/g, '\\lbrack ')
@@ -97,17 +124,8 @@
             .replace(/\\left\s*\{/g, '\\lbrace ')
             .replace(/\\right\s*\}/g, '\\rbrace ');
 
-        // Fix common issues with fractions
-        cleaned = cleaned.replace(
-            /\\frac{([^{}]*)}{([^{}]*)}/g,
-            (match, num, den) => {
-                return `\\frac{${num
-                    .replace(/\(/g, '\\lparen ')
-                    .replace(/\)/g, '\\rparen ')}}{${den
-                    .replace(/\(/g, '\\lparen ')
-                    .replace(/\)/g, '\\rparen ')}}`;
-            }
-        );
+        // Restore protected commands
+        cleaned = cleaned.replace(/@@WTILDE@@([^@]+)@@/g, '\\widetilde{$1}');
 
         return cleaned;
     }
