@@ -1,5 +1,4 @@
 (() => {
-    // Constants
     const DELIMITERS = {
         DISPLAY_DOLLARS: { start: '$$', end: '$$', display: true },
         INLINE_DOLLARS: { start: '$', end: '$', display: false },
@@ -7,18 +6,12 @@
         INLINE_PARENS: { start: '\\(', end: '\\)', display: false },
     };
 
-    // State management
     let state = {
         teXZillaLoaded: false,
     };
 
-    // Debug utility function
-    function debugLog(message, data = null) {
-        console.log(`[LaTeX Debug] ${message}`, data || '');
-    }
-
     function isInCodeBlock(element) {
-        // First check if element is in a code block
+        // Check for code blocks
         let parent = element;
         while (parent) {
             if (parent.tagName === 'PRE' || parent.tagName === 'CODE') {
@@ -27,56 +20,41 @@
             parent = parent.parentElement;
         }
 
-        // Then check if content looks like code/JSON
-        const content = element.textContent;
-
         // Check for JSON-like content
-        if (
-            /^\s*[\[{].*[\]}]\s*$/.test(content) &&
-            (content.includes('"') || content.includes(':'))
-        ) {
-            return true;
-        }
-
-        // Check for code-like density of special characters
-        const specialCharCount = (content.match(/[:"'{}[\],]/g) || []).length;
-        const textLength = content.length;
-        if (textLength > 0 && specialCharCount / textLength > 0.05) {
-            return true;
+        const content = element.textContent.trim();
+        if (content.startsWith('[{') || content.startsWith('{')) {
+            const jsonCount = (content.match(/[{}\[\]",:]/g) || []).length;
+            const textLength = content.length;
+            if (jsonCount / textLength > 0.05) {
+                return true;
+            }
         }
 
         return false;
     }
 
     function isLikelyLatex(content) {
-        // First check if it's just numbers
         if (/^\s*\d+\s*$/.test(content)) {
             return false;
         }
 
-        // Then check for LaTeX content
         return (
-            /[_^{}\\]/.test(content) || // LaTeX control characters
-            /\\?[a-zA-Z]{2,}/.test(content) || // Possible commands
-            /[∫∑∏√∞±≤≥≠]/.test(content) || // Math symbols
-            /[α-ωΑ-Ω]/.test(content) || // Greek letters
-            /\frac/.test(content) || // Common LaTeX commands
-            /\int/.test(content) || // Integrals
-            /\\left|\\right/.test(content) || // Delimiter commands
-            content.includes('\n') // Multiline content
+            /[_^{}\\]/.test(content) ||
+            /\\?[a-zA-Z]{2,}/.test(content) ||
+            /[∫∑∏√∞±≤≥≠]/.test(content) ||
+            /[α-ωΑ-Ω]/.test(content) ||
+            /\\left|\\right/.test(content) ||
+            /\\frac|\\int/.test(content)
         );
     }
 
     async function loadTeXZilla() {
         if (state.teXZillaLoaded) return;
-        debugLog('Loading TeXZilla...');
-
         return new Promise((resolve, reject) => {
             const script = document.createElement('script');
             script.src = 'https://fred-wang.github.io/TeXZilla/TeXZilla-min.js';
             script.onload = () => {
                 state.teXZillaLoaded = true;
-                debugLog('TeXZilla loaded successfully');
                 resolve();
             };
             script.onerror = reject;
@@ -107,22 +85,43 @@
             }
         `;
         document.head.appendChild(styles);
-        debugLog('Styles injected');
+    }
+
+    function cleanLatex(latex) {
+        // Handle nested fractions and parentheses
+        let cleaned = latex
+            .replace(/\\left\s*\(/g, '\\lparen ')
+            .replace(/\\right\s*\)/g, '\\rparen ')
+            .replace(/\\left\s*\[/g, '\\lbrack ')
+            .replace(/\\right\s*\]/g, '\\rbrack ')
+            .replace(/\\left\s*\{/g, '\\lbrace ')
+            .replace(/\\right\s*\}/g, '\\rbrace ');
+
+        // Fix common issues with fractions
+        cleaned = cleaned.replace(
+            /\\frac{([^{}]*)}{([^{}]*)}/g,
+            (match, num, den) => {
+                return `\\frac{${num
+                    .replace(/\(/g, '\\lparen ')
+                    .replace(/\)/g, '\\rparen ')}}{${den
+                    .replace(/\(/g, '\\lparen ')
+                    .replace(/\)/g, '\\rparen ')}}`;
+            }
+        );
+
+        return cleaned;
     }
 
     function convertToMathML(latex, isDisplay) {
-        debugLog('Converting to MathML:', { latex, isDisplay });
         try {
-            const mathML = TeXZilla.toMathML(latex, isDisplay);
+            const cleanedLatex = cleanLatex(latex);
+            const mathML = TeXZilla.toMathML(cleanedLatex, isDisplay);
             return new XMLSerializer().serializeToString(mathML);
         } catch (e) {
-            console.error('TeXZilla conversion error:', e);
-            debugLog('Failed LaTeX:', latex);
             return null;
         }
     }
     function getAdjacentTextNodes(node) {
-        debugLog('Getting adjacent text nodes for:', node.textContent);
         const nodes = [];
         let current = node;
         let text = '';
@@ -184,16 +183,10 @@
             current = current.nextSibling;
         }
 
-        debugLog('Collected text:', text);
-        return {
-            nodes: nodes,
-            text: text,
-        };
+        return { nodes, text };
     }
 
     function findMatchingDelimiter(text, startPos) {
-        debugLog('Finding delimiter at position:', startPos);
-
         // Helper function to find matching bracket considering nesting
         function findMatchingBracket(openBracket, closeBracket, pos) {
             let depth = 1;
@@ -241,7 +234,32 @@
             }
         }
 
-        // Handle unescaped square brackets that should be LaTeX
+        // Handle escaped delimiters
+        if (text.startsWith('\\[', startPos)) {
+            const endPos = text.indexOf('\\]', startPos + 2);
+            if (endPos !== -1) {
+                return {
+                    start: startPos,
+                    end: endPos + 2,
+                    delimiter: DELIMITERS.DISPLAY_BRACKETS,
+                    type: 'escaped',
+                };
+            }
+        }
+
+        if (text.startsWith('\\(', startPos)) {
+            const endPos = text.indexOf('\\)', startPos + 2);
+            if (endPos !== -1) {
+                return {
+                    start: startPos,
+                    end: endPos + 2,
+                    delimiter: DELIMITERS.INLINE_PARENS,
+                    type: 'escaped',
+                };
+            }
+        }
+
+        // Handle unescaped brackets that should be LaTeX
         if (text[startPos] === '[') {
             const endPos = findMatchingBracket('[', ']', startPos);
             if (endPos !== -1) {
@@ -273,36 +291,10 @@
             }
         }
 
-        // Handle already escaped delimiters
-        if (text.startsWith('\\[', startPos)) {
-            const endPos = text.indexOf('\\]', startPos + 2);
-            if (endPos !== -1) {
-                return {
-                    start: startPos,
-                    end: endPos + 2,
-                    delimiter: DELIMITERS.DISPLAY_BRACKETS,
-                    type: 'escaped',
-                };
-            }
-        }
-
-        if (text.startsWith('\\(', startPos)) {
-            const endPos = text.indexOf('\\)', startPos + 2);
-            if (endPos !== -1) {
-                return {
-                    start: startPos,
-                    end: endPos + 2,
-                    delimiter: DELIMITERS.INLINE_PARENS,
-                    type: 'escaped',
-                };
-            }
-        }
-
         return null;
     }
 
     function findMathDelimiters(text) {
-        debugLog('Finding math delimiters in text');
         const segments = [];
         let pos = 0;
         let lastPos = 0;
@@ -320,7 +312,6 @@
             ) {
                 const match = findMatchingDelimiter(text, pos);
                 if (match) {
-                    debugLog('Found match:', match);
                     if (pos > lastPos) {
                         segments.push(text.slice(lastPos, pos));
                     }
@@ -347,11 +338,9 @@
             segments.push(text.slice(lastPos));
         }
 
-        debugLog('Found segments:', segments);
         return segments;
     }
     function processMathExpression(match) {
-        debugLog('Processing math expression:', match);
         const container = document.createElement('span');
         container.className = 'math-container math-processed';
         if (match.display) {
@@ -359,7 +348,6 @@
         }
 
         let latex;
-        // Extract the inner content without the delimiters
         if (match.content.startsWith('$$') && match.content.endsWith('$$')) {
             latex = match.content.slice(2, -2).trim();
         } else if (
@@ -371,13 +359,11 @@
             match.content.startsWith('[') &&
             match.content.endsWith(']')
         ) {
-            // For unescaped brackets that we identified as LaTeX, add the escapes
             latex = match.content.slice(1, -1).trim();
         } else if (
             match.content.startsWith('(') &&
             match.content.endsWith(')')
         ) {
-            // For unescaped parentheses that we identified as LaTeX, add the escapes
             latex = match.content.slice(1, -1).trim();
         } else if (
             match.content.startsWith('\\[') &&
@@ -392,22 +378,11 @@
         }
 
         if (!latex) {
-            debugLog('No LaTeX content extracted');
             container.textContent = match.content;
             return container;
         }
 
         try {
-            // Preserve \left and \right commands
-            latex = latex
-                .replace(/\\left\s*\(/g, '\\left(')
-                .replace(/\\right\s*\)/g, '\\right)')
-                .replace(/\\left\s*\[/g, '\\left[')
-                .replace(/\\right\s*\]/g, '\\right]')
-                .replace(/\\left\s*\{/g, '\\left\\{')
-                .replace(/\\right\s*\}/g, '\\right\\}');
-
-            debugLog('Processing LaTeX:', latex);
             const isDisplay =
                 match.content.startsWith('$$') ||
                 match.content.startsWith('\\[') ||
@@ -417,11 +392,9 @@
             if (mathML) {
                 container.innerHTML = mathML;
             } else {
-                // Fallback: show original content
                 container.textContent = match.content;
             }
         } catch (e) {
-            debugLog('Error converting to MathML:', e);
             container.textContent = match.content;
         }
 
@@ -433,30 +406,26 @@
             return;
         }
 
-        debugLog('Processing node:', node.textContent);
         const { nodes, text } = getAdjacentTextNodes(node);
 
-        // Check for any math delimiters
         let hasDelimiter = false;
         if (
             text.includes('$') ||
             text.includes('\\[') ||
             text.includes('\\(') ||
-            /\[[^\]]*[_^{}\\]/.test(text) || // Square brackets with LaTeX content
-            /\([^)]*[_^{}\\]/.test(text) // Parentheses with LaTeX content
+            /\[[^\]]*[_^{}\\]/.test(text) ||
+            /\([^)]*[_^{}\\]/.test(text)
         ) {
             hasDelimiter = true;
         }
 
         if (!hasDelimiter) {
-            debugLog('No delimiters found');
             return;
         }
 
         try {
             const segments = findMathDelimiters(text);
             if (segments.length === 1 && typeof segments[0] === 'string') {
-                debugLog('Only one text segment found');
                 return;
             }
 
@@ -476,30 +445,21 @@
                 }
             });
 
-            // Replace the original nodes with the wrapper
             const parent = node.parentNode;
             if (parent) {
-                // Remove all nodes first
                 nodes.forEach(n => {
                     try {
                         if (n.node && n.node.parentNode) {
                             n.node.parentNode.removeChild(n.node);
                         }
-                    } catch (e) {
-                        debugLog('Error removing node:', e);
-                    }
+                    } catch (e) {}
                 });
 
-                // Then append the wrapper
                 try {
                     parent.appendChild(wrapper);
-                } catch (e) {
-                    debugLog('Error appending wrapper:', e);
-                }
+                } catch (e) {}
             }
-        } catch (e) {
-            debugLog('Error in processNode:', e);
-        }
+        } catch (e) {}
     }
 
     function processNodes(nodes) {
@@ -509,9 +469,7 @@
             while (index < nodes.length && deadline.timeRemaining() > 0) {
                 try {
                     processNode(nodes[index++]);
-                } catch (e) {
-                    debugLog('Error processing node:', e);
-                }
+                } catch (e) {}
             }
 
             if (index < nodes.length) {
@@ -544,12 +502,10 @@
         while ((node = walker.nextNode())) {
             nodes.push(node);
         }
-        debugLog('Found text nodes:', nodes.length);
         return nodes;
     }
 
     function processMath() {
-        debugLog('Processing math expressions');
         const nodes = findTextNodes();
         if (nodes.length > 0) {
             processNodes(nodes);
@@ -557,20 +513,15 @@
     }
     async function initialize() {
         try {
-            debugLog('Initializing LaTeX converter...');
             await loadTeXZilla();
             injectStyles();
-
-            // Initial processing
             processMath();
 
-            // Enhanced mutation observer with better handling of dynamic content
             const observer = new MutationObserver(mutations => {
                 let shouldProcess = false;
                 let newNodes = [];
 
                 mutations.forEach(mutation => {
-                    // Check for text content changes
                     if (mutation.type === 'characterData') {
                         const node = mutation.target;
                         if (
@@ -582,7 +533,6 @@
                         }
                     }
 
-                    // Check for added nodes
                     mutation.addedNodes.forEach(node => {
                         if (node.nodeType === Node.ELEMENT_NODE) {
                             if (
@@ -607,7 +557,6 @@
                 });
 
                 if (shouldProcess) {
-                    debugLog(`Processing ${newNodes.length} new nodes`);
                     requestIdleCallback(() => {
                         newNodes.forEach(node => {
                             try {
@@ -642,9 +591,7 @@
                                 } else if (node.nodeType === Node.TEXT_NODE) {
                                     processNode(node);
                                 }
-                            } catch (e) {
-                                debugLog('Error processing mutation node:', e);
-                            }
+                            } catch (e) {}
                         });
                     });
                 }
@@ -655,33 +602,19 @@
                 subtree: true,
                 characterData: true,
             });
-
-            debugLog('Initialization complete');
-        } catch (error) {
-            console.error('Error initializing LaTeX converter:', error);
-            debugLog('Initialization error:', error);
-        }
+        } catch (e) {}
     }
 
-    // Utility functions for external control
     const LaTeXProcessor = {
-        toggleDebug: function (enable = true) {
-            window.DEBUG_LATEX = enable;
-            debugLog('Debug mode ' + (enable ? 'enabled' : 'disabled'));
-        },
-
         reprocess: function () {
-            debugLog('Manually triggering LaTeX processing');
             processMath();
         },
 
         processElement: function (element) {
             if (!element) {
-                debugLog('No element provided');
                 return;
             }
 
-            debugLog('Processing specific element:', element);
             try {
                 const textNodes = [];
                 const walker = document.createTreeWalker(
@@ -710,27 +643,16 @@
                 if (textNodes.length > 0) {
                     processNodes(textNodes);
                 }
-            } catch (e) {
-                debugLog('Error processing element:', e);
-            }
-        },
-
-        getState: function () {
-            return {
-                teXZillaLoaded: state.teXZillaLoaded,
-                debug: !!window.DEBUG_LATEX,
-            };
+            } catch (e) {}
         },
     };
 
-    // Start the extension
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initialize);
     } else {
         initialize();
     }
 
-    // Expose utility functions globally
     if (typeof window !== 'undefined') {
         window.LaTeXProcessor = LaTeXProcessor;
     }
