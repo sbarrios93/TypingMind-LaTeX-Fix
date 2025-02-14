@@ -289,6 +289,7 @@
         }
 
         let latex;
+        // Extract the inner content without the delimiters
         if (match.content.startsWith('$$') && match.content.endsWith('$$')) {
             latex = match.content.slice(2, -2).trim();
         } else if (
@@ -300,15 +301,23 @@
             match.content.startsWith('[') &&
             match.content.endsWith(']')
         ) {
-            // Add backslashes for square brackets
-            latex = '\\[' + match.content.slice(1, -1).trim() + '\\]';
+            // Just get the inner content for square brackets
+            latex = match.content.slice(1, -1).trim();
         } else if (
             match.content.startsWith('(') &&
             match.content.endsWith(')')
         ) {
-            // Add backslashes for parentheses
-            latex = '\\(' + match.content.slice(1, -1).trim() + '\\)';
-        } else {
+            // Just get the inner content for parentheses
+            latex = match.content.slice(1, -1).trim();
+        } else if (
+            match.content.startsWith('\\[') &&
+            match.content.endsWith('\\]')
+        ) {
+            latex = match.content.slice(2, -2).trim();
+        } else if (
+            match.content.startsWith('\\(') &&
+            match.content.endsWith('\\)')
+        ) {
             latex = match.content.slice(2, -2).trim();
         }
 
@@ -326,8 +335,14 @@
                 .replace(/\\left\s*\[/g, '\\lbrack ')
                 .replace(/\\right\s*\]/g, '\\rbrack ');
 
-            debugLog('Processed LaTeX:', latex);
-            const mathML = convertToMathML(latex, match.display);
+            debugLog('Processing LaTeX:', latex);
+            // Pass the display parameter based on the delimiter type
+            const isDisplay =
+                match.content.startsWith('$$') ||
+                match.content.startsWith('\\[') ||
+                match.content.startsWith('[');
+
+            const mathML = convertToMathML(latex, isDisplay);
             if (mathML) {
                 container.innerHTML = mathML;
             } else {
@@ -340,7 +355,6 @@
 
         return container;
     }
-
     function processNode(node) {
         if (!node || node.nodeType !== Node.TEXT_NODE || isInCodeBlock(node)) {
             return;
