@@ -119,17 +119,22 @@
     }
 
     function findMatchingDelimiter(text, startPos) {
+        // Handle display dollars ($$...$$)
         if (text.startsWith('$$', startPos)) {
-            const endPos = text.indexOf('$$', startPos + 2);
-            if (endPos !== -1) {
-                return {
-                    start: startPos,
-                    end: endPos + 2,
-                    delimiter: DELIMITERS.DISPLAY_DOLLARS,
-                };
+            let pos = startPos + 2;
+            while (pos < text.length - 1) {
+                if (text.startsWith('$$', pos) && text[pos - 1] !== '\\') {
+                    return {
+                        start: startPos,
+                        end: pos + 2,
+                        delimiter: DELIMITERS.DISPLAY_DOLLARS,
+                    };
+                }
+                pos++;
             }
         }
 
+        // Handle inline dollars ($...$)
         if (text[startPos] === '$') {
             let pos = startPos + 1;
             while (pos < text.length) {
@@ -144,18 +149,36 @@
             }
         }
 
-        for (const del of Object.values(DELIMITERS)) {
-            if (text.startsWith(del.start, startPos)) {
-                const endPos = text.indexOf(
-                    del.end,
-                    startPos + del.start.length
-                );
-                if (endPos !== -1) {
-                    return {
-                        start: startPos,
-                        end: endPos + del.end.length,
-                        delimiter: del,
-                    };
+        // Handle backslash delimiters (\[...\] and \(...\))
+        if (text[startPos] === '\\') {
+            for (const del of [
+                DELIMITERS.DISPLAY_BRACKETS,
+                DELIMITERS.INLINE_PARENS,
+            ]) {
+                if (text.startsWith(del.start, startPos)) {
+                    let pos = startPos + del.start.length;
+                    let escaped = false;
+
+                    while (pos < text.length) {
+                        if (text[pos] === '\\') {
+                            if (!escaped) {
+                                escaped = true;
+                                pos++;
+                                continue;
+                            }
+                        }
+
+                        if (text.startsWith(del.end, pos) && !escaped) {
+                            return {
+                                start: startPos,
+                                end: pos + del.end.length,
+                                delimiter: del,
+                            };
+                        }
+
+                        escaped = false;
+                        pos++;
+                    }
                 }
             }
         }
