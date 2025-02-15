@@ -175,6 +175,11 @@
             return -1;
         }
 
+        // Check if content contains a valid dollar-sign expression
+        function containsDollarExpression(content) {
+            return /\$[^\$]+\$/.test(content);
+        }
+
         // Handle display dollars
         if (text.startsWith('$$', startPos)) {
             const endPos = text.indexOf('$$', startPos + 2);
@@ -208,6 +213,10 @@
         if (text.startsWith('\\[', startPos)) {
             const endPos = text.indexOf('\\]', startPos + 2);
             if (endPos !== -1) {
+                const content = text.slice(startPos + 2, endPos);
+                if (containsDollarExpression(content)) {
+                    return null;
+                }
                 return {
                     start: startPos,
                     end: endPos + 2,
@@ -220,6 +229,10 @@
         if (text.startsWith('\\(', startPos)) {
             const endPos = text.indexOf('\\)', startPos + 2);
             if (endPos !== -1) {
+                const content = text.slice(startPos + 2, endPos);
+                if (containsDollarExpression(content)) {
+                    return null;
+                }
                 return {
                     start: startPos,
                     end: endPos + 2,
@@ -234,6 +247,10 @@
             const endPos = findMatchingBracket('[', ']', startPos);
             if (endPos !== -1) {
                 const content = text.slice(startPos + 1, endPos);
+                // Don't process as LaTeX if it contains dollar expressions
+                if (containsDollarExpression(content)) {
+                    return null;
+                }
                 if (isLikelyLatex(content)) {
                     return {
                         start: startPos,
@@ -250,6 +267,10 @@
             const endPos = findMatchingBracket('(', ')', startPos);
             if (endPos !== -1) {
                 const content = text.slice(startPos + 1, endPos);
+                // Don't process as LaTeX if it contains dollar expressions
+                if (containsDollarExpression(content)) {
+                    return null;
+                }
                 if (isLikelyLatex(content)) {
                     return {
                         start: startPos,
@@ -263,6 +284,7 @@
 
         return null;
     }
+
     function findMathDelimiters(text) {
         const segments = [];
         let pos = 0;
