@@ -1,4 +1,24 @@
 (() => {
+    
+    // Polyfill for requestIdleCallback
+    if (!window.requestIdleCallback) {
+        window.requestIdleCallback = function(callback, options) {
+            const timeout = (options && options.timeout) || 50;
+            return setTimeout(() => {
+                const start = Date.now();
+                callback({
+                    didTimeout: false,
+                    timeRemaining() {
+                        return Math.max(0, timeout - (Date.now() - start));
+                    }
+                });
+            }, 1);
+        };
+        
+        window.cancelIdleCallback = function(id) {
+            clearTimeout(id);
+        };
+    }
     const DELIMITERS = {
         DISPLAY_DOLLARS: { start: '$$', end: '$$', display: true },
         INLINE_DOLLARS: { start: '$', end: '$', display: false },
