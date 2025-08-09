@@ -39,19 +39,21 @@
     }
 
     function isLikelyLatex(content) {
-        if (/^\s*\d+\s*$/.test(content)) {
-            return false;
-        }
-
-        return (
-            /[_^{}\\]/.test(content) ||
-            /\\?[a-zA-Z]{2,}/.test(content) ||
-            /[∫∑∏√∞±≤≥≠]/.test(content) ||
-            /[α-ωΑ-Ω]/.test(content) ||
-            /\\left|\\right/.test(content) ||
-            /\\frac|\\int/.test(content)
-        );
+    if (/^\s*\d+\s*$/.test(content)) {
+        return false;
     }
+
+    return (
+        /[_^{}\\]/.test(content) ||                    // LaTeX syntax chars
+        /\\[a-zA-Z]+/.test(content) ||                 // Actual LaTeX commands (\alpha, \frac)
+        /[∫∑∏√∞±≤≥≠≈∝∂∇]/.test(content) ||           // Math symbols
+        /[α-ωΑ-Ω]/.test(content) ||                    // Greek letters
+        /\b(sin|cos|tan|log|ln|exp|lim|int|sum|prod)\b/.test(content) || // Math functions
+        /\^[^a-zA-Z\s]/.test(content) ||               // Superscripts with symbols
+        /_[^a-zA-Z\s]/.test(content)                   // Subscripts with symbols
+    );
+}
+
 
     async function loadTeXZilla() {
         if (state.teXZillaLoaded) return;
